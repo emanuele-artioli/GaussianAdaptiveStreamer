@@ -2,7 +2,7 @@ import asyncio, os
 from models import list_models
 from experiments import export_experiment_data, metrics_predict_logic, save_movement, HandlerResult
 from logger import logger
-from render import render_backend, render_image_raw, save_render_bytes, using_preview_fallback
+from render import render_backend, render_image_raw, requires_tensor_model_load, save_render_bytes
 from models import get_model, ensure_started
 from concurrent.futures import ThreadPoolExecutor
 from encoding import encode_jpeg, encode_png
@@ -162,8 +162,13 @@ async def load_model(request: Request):
         return JSONResponse({"error": f"unknown modelId={model_id}"}, status_code=404)
 
     async with MODEL_LOAD_LOCK:
-        if using_preview_fallback():
-            logger.info("Skipping tensor load for %s because preview fallback backend is active", model_id)
+        backend_name, _ = render_backend()
+        if not requires_tensor_model_load():
+            logger.info(
+                "Skipping tensor load for %s because backend=%s does not need tensor cache",
+                model_id,
+                backend_name,
+            )
         else:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, model.load)

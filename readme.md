@@ -95,7 +95,7 @@ python -c "import torch; print('Torch:', torch.__version__); print('CUDA availab
 
 - `requirements.txt` installs CUDA 11.8 PyTorch wheels for NVIDIA environments.
 - `requirements-macos.txt` avoids CUDA-only dependencies for Apple Silicon.
-- In non-CUDA environments, rendering can run in preview fallback mode (resized model preview images) so HTTP endpoints and DASH streaming still function.
+- In non-CUDA environments, rendering uses the software point-splat fallback by default. Preview-image mode is only used as a last-resort fallback when software rendering fails.
 
 ## Runtime Behavior and Configuration
 
@@ -112,14 +112,20 @@ The server selects torch device in this order:
 The renderer selects backend as follows:
 
 - `gsplat` backend when CUDA + gsplat are available
-- `preview` fallback backend otherwise
+- `software` backend otherwise (CPU point-splat fallback for non-CUDA systems, including Apple Silicon)
+- `preview` backend only as a last-resort fallback if software rendering fails
 
 You can override with:
 
 - `GS_RENDER_BACKEND=gsplat` (force gsplat; errors if unavailable)
+- `GS_RENDER_BACKEND=software` (force software fallback renderer)
 - `GS_RENDER_BACKEND=preview` (force preview fallback)
 
-When rendering requests are served, responses include `X-Render-Backend` to indicate active backend (`gsplat` or `preview`).
+When rendering requests are served, responses include `X-Render-Backend` to indicate active backend (`gsplat`, `software`, or `preview`).
+
+Software renderer tuning:
+
+- `GS_SOFTWARE_MAX_POINTS` controls max points rendered per frame (default: `120000`). Lower this value to improve FPS on slower CPUs.
 
 ### ffmpeg encoder selection
 

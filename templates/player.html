@@ -125,6 +125,7 @@
             </div>
             <div class="status">
                 <span class="chip">Server render: <strong><span id="render-ms">–</span> ms</strong></span>
+                <span class="chip">Backend: <strong><span id="render-backend">–</span></strong></span>
                 <span class="chip secondary">Position: <strong id="position-display">Angle: 180°, Elevation: 0°, X: 0,
                         Y: 0, Z: 5</strong></span>
             </div>
@@ -401,12 +402,13 @@
                     .then(async (response) => {
                         const contentLength = Number(response.headers.get('Content-Length') || 0);
                         const renderHeader = response.headers.get('X-Render-Time-Ms');
+                        const backendHeader = response.headers.get('X-Render-Backend');
                         renderMs = renderHeader != null ? parseFloat(renderHeader) : NaN;
 
                         const blob = await response.blob();
-                        return { blob, contentLength, renderMs };
+                        return { blob, contentLength, renderMs, backendHeader };
                     })
-                    .then(({ blob, contentLength, renderMs }) => {
+                    .then(({ blob, contentLength, renderMs, backendHeader }) => {
                         const imgUrl = URL.createObjectURL(blob);
                         const img = new Image();
 
@@ -453,6 +455,11 @@
                             if (!Number.isNaN(renderMs)) {
                                 const el = document.getElementById('render-ms');
                                 if (el) el.textContent = renderMs.toFixed(2);
+                            }
+
+                            if (backendHeader) {
+                                const be = document.getElementById('render-backend');
+                                if (be) be.textContent = backendHeader;
                             }
 
                             URL.revokeObjectURL(imgUrl);
