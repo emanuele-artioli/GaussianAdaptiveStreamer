@@ -7,7 +7,9 @@ python http3_server.py --certificate certificates/ssl_cert.pem --private-key cer
 bash scripts/launch_quic_chrome.sh
 
 macOS direct command:
-open -a "Google Chrome" --args \
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+    --user-data-dir=/tmp/gaussian-streamer-quic-profile \
+    --new-window \
     --enable-experimental-web-platform-features \
     --ignore-certificate-errors-spki-list=BSQJ0jkQ7wwhR7KvPZ+DSNk2XTZ/MS6xCbo9qu++VdQ= \
     --origin-to-force-quic-on=localhost:4433 \

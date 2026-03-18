@@ -155,7 +155,9 @@ bash scripts/launch_quic_chrome.sh
 macOS equivalent command:
 
 ```bash
-open -a "Google Chrome" --args \
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir=/tmp/gaussian-streamer-quic-profile \
+  --new-window \
   --enable-experimental-web-platform-features \
   --ignore-certificate-errors-spki-list=BSQJ0jkQ7wwhR7KvPZ+DSNk2XTZ/MS6xCbo9qu++VdQ= \
   --origin-to-force-quic-on=localhost:4433 \
@@ -176,6 +178,7 @@ Linux equivalent command:
 - For trying the experimental version with dash.js as player type instead of /models-ui, go to /player-dash.
 - Close Google Chrome before running this command.
 - To open a different page with the helper script, pass a path: `bash scripts/launch_quic_chrome.sh player-dash`.
+- On macOS, `open -a "Google Chrome" --args ...` can launch Chrome but ignore the URL argument. Prefer `bash scripts/launch_quic_chrome.sh`.
 
 
 ## Preview
