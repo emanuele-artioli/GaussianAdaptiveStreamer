@@ -11,6 +11,7 @@ from typing import Optional
 
 from logger import logger
 from statics import MODELS_DIR, PREVIEW_CANDIDATES, EVICT_AFTER_MS, EVICT_CHECK_EVERY_S
+from runtime_config import pick_torch_device, clear_device_cache
 
 
 def _now_ms() -> int:
@@ -58,15 +59,14 @@ class Model3D:
     
     
     def load(self, device: Optional[torch.device] = None) -> None:
-        """Load tensors to device (defaults to cuda if available)."""
+        """Load tensors to the best available device (CUDA/MPS/CPU)."""
         if self.loaded:
             self.last_accessed = _now_ms()
             return
 
         means_np, quats_np, scales_np, opacities_np, shs_np = load_gs_ply(self.model_path)
 
-        if device is None:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = pick_torch_device(device)
 
         self.means = torch.from_numpy(means_np).to(device)
         self.quats = torch.from_numpy(quats_np).to(device)
@@ -91,6 +91,7 @@ class Model3D:
 
             self.loading = True
             try:
+                device = self.device
                 self.means = None
                 self.quats = None
                 self.scales = None
@@ -99,8 +100,7 @@ class Model3D:
                 self.device = None
                 self.loaded = False
                 self.last_accessed = _now_ms()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                clear_device_cache(device)
                 return True
             finally:
                 self.loading = False

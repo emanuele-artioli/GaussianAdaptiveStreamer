@@ -2,7 +2,7 @@ import asyncio, os
 from models import list_models
 from experiments import export_experiment_data, metrics_predict_logic, save_movement, HandlerResult
 from logger import logger
-from render import render_image_raw, save_render_bytes
+from render import render_backend, render_image_raw, save_render_bytes, using_preview_fallback
 from models import get_model, ensure_started
 from concurrent.futures import ThreadPoolExecutor
 from encoding import encode_jpeg, encode_png
@@ -71,10 +71,16 @@ async def render_handler(request: Request):
         lambda: encode_jpeg(img_stream, quality=stream_quality)
     )
 
+    backend_name, _ = render_backend()
+
     return Response(
         jpeg_bytes,
         media_type="image/jpeg",
-        headers={"Cache-Control": "no-store", "X-Render-Time-Ms": f"{render_ms:.2f}"},
+        headers={
+            "Cache-Control": "no-store",
+            "X-Render-Time-Ms": f"{render_ms:.2f}",
+            "X-Render-Backend": backend_name,
+        },
     )
 
     
@@ -156,9 +162,11 @@ async def load_model(request: Request):
         return JSONResponse({"error": f"unknown modelId={model_id}"}, status_code=404)
 
     async with MODEL_LOAD_LOCK:
-        loop = asyncio.get_running_loop()
-
-        await loop.run_in_executor(None, model.load)
+        if using_preview_fallback():
+            logger.info("Skipping tensor load for %s because preview fallback backend is active", model_id)
+        else:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, model.load)
 
     return JSONResponse(model_to_json(model))
 

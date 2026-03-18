@@ -1,6 +1,5 @@
 import asyncio
 import os
-import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from logger import logger
 from models import get_model
 from render import render_image_raw
+from runtime_config import encoder_tuning_args, pick_video_encoder, resolve_ffmpeg_binary
 from statics import DASH_DIR
 
 FFMPEG = os.environ.get("FFMPEG", "/usr/local/bin/ffmpeg")
@@ -86,9 +86,13 @@ class DashStreamer:
 
             gop = 8
 
-            ffmpeg = shutil.which(FFMPEG) if os.path.sep not in FFMPEG else FFMPEG
-            if not ffmpeg or not Path(ffmpeg).exists():
+            ffmpeg = resolve_ffmpeg_binary(FFMPEG)
+            if not ffmpeg:
                 raise RuntimeError(f"ffmpeg not found: {FFMPEG}")
+
+            video_encoder = pick_video_encoder(ffmpeg)
+            tune_args = encoder_tuning_args(video_encoder)
+            logger.info("Using ffmpeg encoder: %s", video_encoder)
 
             for p in self.out_dir.glob("*"):
                 try:
@@ -125,11 +129,11 @@ class DashStreamer:
             for i, r in enumerate(self.reps):
                 cmd += [
                     "-map", f"[v{i}o]",
-                    "-c:v", "h264_nvenc",
+                    "-c:v", video_encoder,
                     "-pix_fmt", "yuv420p",
-                    "-preset", "p1",
-                    "-tune", "ll", 
-                    "-rc", "cbr",
+                ]
+                cmd += tune_args
+                cmd += [
                     "-b:v", r["br"],
                     "-maxrate", r["br"],
                     "-bufsize", "2M",
@@ -137,6 +141,8 @@ class DashStreamer:
                     "-keyint_min", str(gop),
                     "-sc_threshold", "0",
                 ]
+
+            adaptation_streams = ",".join(str(i) for i in range(len(self.reps)))
 
             cmd += [
                 "-f", "dash",
@@ -151,7 +157,7 @@ class DashStreamer:
                 "-streaming", "1",
                 "-target_latency", "0.1",
                 "-start_number", "1",
-                "-adaptation_sets", "id=0,streams=0",
+                "-adaptation_sets", f"id=0,streams={adaptation_streams}",
                 "-init_seg_name", "init-$RepresentationID$.mp4",
                 "-media_seg_name", "chunk-$RepresentationID$-$Number%05d$.m4s",
                 str(self.mpd_path),
