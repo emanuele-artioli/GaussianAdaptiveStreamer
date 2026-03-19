@@ -11,6 +11,10 @@ LOG_DIR = os.path.join(ROOT, "logs")
 STATIC_DIR = os.path.join(ROOT, "static")
 MODELS_DIR = os.path.join(STATIC_DIR, "models")
 DASH_DIR = os.path.join("dash")
+WEB_SPLAT_DIR = os.path.join(ROOT, "web-splat")
+WEB_SPLAT_PUBLIC_DIR = os.path.join(WEB_SPLAT_DIR, "public")
+WEB_SPLAT_REQUIRED_FILES = ("index.html", "web_splats.js", "web_splats_bg.wasm")
+WEB_SPLAT_CACHE_DIR = os.path.join(STATIC_DIR, "web-splat-cache")
 
 os.makedirs(CAPTURES_DIR, exist_ok=True)
 os.makedirs(EXPERIMENTS_DIR, exist_ok=True)
@@ -18,6 +22,7 @@ os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
+os.makedirs(WEB_SPLAT_CACHE_DIR, exist_ok=True)
 
 
 

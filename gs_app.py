@@ -22,7 +22,7 @@ from starlette.routing import Route, Mount
 from starlette.staticfiles import StaticFiles
 
 
-from statics import STATIC_DIR
+from statics import STATIC_DIR, WEB_SPLAT_PUBLIC_DIR
 import routes
 
 starlette = Starlette(
@@ -34,6 +34,9 @@ starlette = Starlette(
         Route("/models", routes.get_list_of_all_available_models, methods=["GET"]), 
         Route("/models-ui", routes.models_page, methods=["GET"]),
         Route("/player", routes.player_page, methods=["GET"]),
+        Route("/player-legacy", routes.player_legacy_page, methods=["GET"]),
+        Route("/web-splat-model/{model_id}", routes.web_splat_model_file, methods=["GET"]),
+        Route("/web-splat-scene/{model_id}", routes.web_splat_scene_file, methods=["GET"]),
         Route("/loadModel", routes.load_model, methods=["POST"]),
         Route("/movement", routes.save_movements, methods=["POST"]),
         Route("/saveImages", routes.save_images, methods=["POST"]),
@@ -43,6 +46,7 @@ starlette = Starlette(
         Route("/dash/stop", routes.dash_stop, methods=["POST"]),
         Route("/player-dash", routes.player_dash_page, methods=["GET"]),
         Route("/dash/{path:path}", routes.dash_file, methods=["GET"]),
+        Mount("/web-splat", StaticFiles(directory=WEB_SPLAT_PUBLIC_DIR, html=True, check_dir=False), name="web-splat"),
         
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     ]

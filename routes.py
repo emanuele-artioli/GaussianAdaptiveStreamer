@@ -1,4 +1,7 @@
 import asyncio, os
+from pathlib import Path
+import threading
+from urllib.parse import quote
 from models import list_models
 from experiments import export_experiment_data, metrics_predict_logic, save_movement, HandlerResult
 from logger import logger
@@ -6,14 +9,218 @@ from render import render_backend, render_image_raw, requires_tensor_model_load,
 from models import get_model, ensure_started
 from concurrent.futures import ThreadPoolExecutor
 from encoding import encode_jpeg, encode_png
-from statics import EXPERIMENTS_DIR, DASH_DIR
+from statics import (
+    EXPERIMENTS_DIR,
+    DASH_DIR,
+    WEB_SPLAT_PUBLIC_DIR,
+    WEB_SPLAT_REQUIRED_FILES,
+    WEB_SPLAT_CACHE_DIR,
+)
 from dash_streamer import STREAMER
 
 
 RENDER_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse, FileResponse, Response, PlainTextResponse
+from starlette.responses import JSONResponse, FileResponse, Response, PlainTextResponse, RedirectResponse
+
+
+_WEB_SPLAT_PREPARE_LOCK = threading.Lock()
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%s, using default=%s", name, raw, default)
+        return default
+
+
+def _web_splat_ply_limits() -> tuple[int, int]:
+    # Keep browser-side parsing and GPU upload tractable for large scenes.
+    max_bytes = max(500_000, _env_int("WEB_SPLAT_MAX_PLY_BYTES", 1_000_000))
+    max_points = max(5_000, _env_int("WEB_SPLAT_MAX_POINTS", 10_000))
+    return max_bytes, max_points
+
+
+def _web_splat_force_sh0() -> bool:
+    raw = os.environ.get("WEB_SPLAT_FORCE_SH0", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _strip_vertex_dtype_to_sh0(sampled):
+    names = sampled.dtype.names or ()
+
+    required_core = (
+        "x",
+        "y",
+        "z",
+        "nx",
+        "ny",
+        "nz",
+        "f_dc_0",
+        "f_dc_1",
+        "f_dc_2",
+        "opacity",
+        "scale_0",
+        "scale_1",
+        "scale_2",
+        "rot_0",
+        "rot_1",
+        "rot_2",
+        "rot_3",
+    )
+
+    if not all(field in names for field in required_core):
+        return sampled, False
+
+    keep_fields = list(required_core)
+    new_dtype = [(field, sampled.dtype.fields[field][0]) for field in keep_fields]
+
+    import numpy as np
+
+    stripped = np.empty(sampled.shape[0], dtype=new_dtype)
+    for field in keep_fields:
+        stripped[field] = sampled[field]
+
+    return stripped, True
+
+
+def _web_splat_cached_ply_path(model_id: str, source_path: Path, max_points: int, force_sh0: bool) -> Path:
+    stat = source_path.stat()
+    safe_id = quote(model_id, safe="")
+    sh_tag = "sh0" if force_sh0 else "shn"
+    name = f"{safe_id}-m{stat.st_mtime_ns}-s{stat.st_size}-p{max_points}-{sh_tag}.ply"
+    return Path(WEB_SPLAT_CACHE_DIR) / name
+
+
+def _prepare_web_splat_model_file(model_id: str, source_path: Path) -> tuple[Path, str]:
+    max_bytes, max_points = _web_splat_ply_limits()
+    force_sh0 = _web_splat_force_sh0()
+
+    try:
+        source_size = source_path.stat().st_size
+    except OSError:
+        return source_path, "stat-failed"
+
+    if source_size <= max_bytes:
+        return source_path, "full"
+
+    cache_path = _web_splat_cached_ply_path(
+        model_id=model_id,
+        source_path=source_path,
+        max_points=max_points,
+        force_sh0=force_sh0,
+    )
+    if cache_path.is_file():
+        return cache_path, "cached-downsample"
+
+    with _WEB_SPLAT_PREPARE_LOCK:
+        if cache_path.is_file():
+            return cache_path, "cached-downsample"
+
+        try:
+            from plyfile import PlyData, PlyElement
+
+            logger.warning(
+                "Preparing browser-sized web-splat PLY for model=%s (source=%s bytes, limit=%s bytes, max_points=%s)",
+                model_id,
+                source_size,
+                max_bytes,
+                max_points,
+            )
+
+            ply = PlyData.read(str(source_path), mmap="r")
+            vertices = ply["vertex"].data
+            num_points = int(len(vertices))
+
+            if num_points <= max_points:
+                return source_path, "full"
+
+            stride = max(1, (num_points + max_points - 1) // max_points)
+            sampled = vertices[::stride].copy()
+
+            sh_mode = "sh-native"
+            if force_sh0:
+                sampled, stripped = _strip_vertex_dtype_to_sh0(sampled)
+                sh_mode = "sh0" if stripped else "sh-native-missing-fields"
+
+            out_vertex = PlyElement.describe(sampled, "vertex")
+            out_ply = PlyData(
+                [out_vertex],
+                text=False,
+                byte_order=ply.byte_order,
+                comments=list(ply.comments),
+                obj_info=list(ply.obj_info),
+            )
+
+            tmp_path = cache_path.with_suffix(".tmp")
+            if tmp_path.exists():
+                tmp_path.unlink()
+            out_ply.write(str(tmp_path))
+            os.replace(tmp_path, cache_path)
+
+            logger.warning(
+                "web-splat downsample ready for model=%s: %s -> %s points (source=%s bytes, output=%s bytes)",
+                model_id,
+                num_points,
+                len(sampled),
+                source_size,
+                cache_path.stat().st_size,
+            )
+            return cache_path, f"downsampled-{sh_mode}"
+        except Exception as exc:
+            try:
+                if "tmp_path" in locals() and tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+            logger.exception("Failed to prepare downsampled web-splat PLY for model=%s: %s", model_id, exc)
+            return source_path, "downsample-failed"
+
+
+def _player_prefers_web_splat() -> bool:
+    mode = os.environ.get("GS_PLAYER_BACKEND", "web-splat-gui").strip().lower()
+    if mode in {"legacy", "server", "render"}:
+        return False
+    if mode in {"", "web-splat", "websplat", "auto", "web-splat-gui", "gui"}:
+        return True
+    if mode in {"web-splat-standalone", "standalone"}:
+        return True
+    logger.warning("Unknown GS_PLAYER_BACKEND=%s, defaulting to web-splat-gui player", mode)
+    return True
+
+
+def _player_standalone_web_splat() -> bool:
+    mode = os.environ.get("GS_PLAYER_BACKEND", "web-splat-gui").strip().lower()
+    return mode in {"web-splat-standalone", "standalone"}
+
+
+def _web_splat_ready() -> tuple[bool, str]:
+    base = Path(WEB_SPLAT_PUBLIC_DIR)
+    if not base.is_dir():
+        return False, f"missing directory: {base}"
+
+    missing = [name for name in WEB_SPLAT_REQUIRED_FILES if not (base / name).is_file()]
+    if missing:
+        return False, f"missing build artifacts: {', '.join(missing)}"
+
+    return True, "ok"
+
+
+def _build_web_splat_target(model_id: str, include_scene: bool) -> str:
+    encoded_model = quote(model_id, safe="")
+    file_url = f"/web-splat-model/{encoded_model}"
+    target = f"/web-splat/?file={quote(file_url, safe='/:')}"
+
+    if include_scene:
+        scene_url = f"/web-splat-scene/{encoded_model}"
+        target += f"&scene={quote(scene_url, safe='/:')}"
+
+    return target
 
 async def models_page(request: Request):
     await ensure_started()
@@ -21,7 +228,79 @@ async def models_page(request: Request):
 
 async def player_page(request: Request):
     await ensure_started()
+    model_id = (request.query_params.get("modelId") or "").strip()
+    if not model_id:
+        return RedirectResponse("/models-ui", status_code=307)
+
+    try:
+        model = get_model(model_id=model_id)
+    except KeyError:
+        return JSONResponse({"error": f"unknown modelId={model_id}"}, status_code=404)
+
+    if not _player_prefers_web_splat():
+        return FileResponse("templates/player.html")
+
+    ready, reason = _web_splat_ready()
+    if not ready:
+        logger.warning("web-splat unavailable (%s), falling back to legacy player", reason)
+        return FileResponse("templates/player.html")
+
+    if not _player_standalone_web_splat():
+        return FileResponse("templates/player.html")
+
+    scene_path = Path(model.model_path).parent / "cameras.json"
+    target = _build_web_splat_target(model_id=model_id, include_scene=scene_path.is_file())
+    return RedirectResponse(target, status_code=307)
+
+
+async def player_legacy_page(request: Request):
+    await ensure_started()
     return FileResponse("templates/player.html")
+
+
+async def web_splat_model_file(request: Request):
+    await ensure_started()
+    model_id = request.path_params["model_id"]
+
+    try:
+        model = get_model(model_id=model_id)
+    except KeyError:
+        return PlainTextResponse("unknown model", status_code=404)
+
+    model_path = Path(model.model_path)
+    if not model_path.is_file():
+        return PlainTextResponse("model file not found", status_code=404)
+
+    served_path, source_mode = _prepare_web_splat_model_file(model_id=model_id, source_path=model_path)
+
+    return FileResponse(
+        str(served_path),
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-WebSplat-Model-Source": source_mode,
+        },
+    )
+
+
+async def web_splat_scene_file(request: Request):
+    await ensure_started()
+    model_id = request.path_params["model_id"]
+
+    try:
+        model = get_model(model_id=model_id)
+    except KeyError:
+        return PlainTextResponse("unknown model", status_code=404)
+
+    scene_path = Path(model.model_path).parent / "cameras.json"
+    if not scene_path.is_file():
+        return PlainTextResponse("scene file not found", status_code=404)
+
+    return FileResponse(
+        str(scene_path),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
+    )
 
 async def player_dash_page(request: Request):
     await ensure_started()
@@ -233,7 +512,6 @@ async def save_images(request: Request):
     )
     
 import json
-from pathlib import Path
 from typing import Any
 
 def load_movements(path: str | Path) -> list[dict[str, Any]]:

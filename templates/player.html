@@ -264,6 +264,11 @@
 
         const urlParams = new URLSearchParams(window.location.search);
         const modelId = urlParams.get("modelId"); // string or null
+        const useWebSplat = (window.location.pathname !== '/player-legacy') && ((urlParams.get('engine') || 'websplat').toLowerCase() === 'websplat');
+        let webSplatIframe = null;
+        let webSplatReady = false;
+        let webSplatInitPromise = null;
+        let renderMs = NaN;
 
         const objectViewer = document.getElementById('object-viewer');
         const positionDisplay = document.getElementById('position-display');
@@ -377,9 +382,162 @@
             sidebar.classList.toggle('collapsed');
         }
 
+        function quatFromAxisAngle(ax, ay, az, angleRad) {
+            const half = angleRad * 0.5;
+            const s = Math.sin(half);
+            return { x: ax * s, y: ay * s, z: az * s, w: Math.cos(half) };
+        }
+
+        function quatMul(a, b) {
+            return {
+                w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+                x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+            };
+        }
+
+        function quatNormalize(q) {
+            const n = Math.hypot(q.x, q.y, q.z, q.w) || 1.0;
+            return { x: q.x / n, y: q.y / n, z: q.z / n, w: q.w / n };
+        }
+
+        function currentWebSplatPose() {
+            const yaw = angle * Math.PI / 180.0;
+            const pitch = elevation * Math.PI / 180.0;
+
+            // software renderer uses world->camera = Rx(pitch)*Ry(yaw), so camera->world is inverse
+            const qYawInv = quatFromAxisAngle(0, 1, 0, -yaw);
+            const qPitchInv = quatFromAxisAngle(1, 0, 0, -pitch);
+            const q = quatNormalize(quatMul(qYawInv, qPitchInv));
+
+            const safeFx = Math.max(1e-3, Number(fx) || 1300.0);
+            const safeFy = Math.max(1e-3, Number(fy) || 800.0);
+            const safeW = Math.max(1, Number(width) || 800);
+            const safeH = Math.max(1, Number(height) || 600);
+
+            return {
+                px: Number(x) || 0,
+                py: Number(y) || 0,
+                pz: Number(z) || 0,
+                qx: q.x,
+                qy: q.y,
+                qz: q.z,
+                qw: q.w,
+                fovxRad: 2.0 * Math.atan(safeW / (2.0 * safeFx)),
+                fovyRad: 2.0 * Math.atan(safeH / (2.0 * safeFy)),
+            };
+        }
+
+        async function initWebSplatViewer() {
+            if (!useWebSplat || webSplatReady) return;
+            if (webSplatInitPromise) return webSplatInitPromise;
+
+            webSplatInitPromise = (async () => {
+                const encodedModelId = encodeURIComponent(modelId || '');
+                const modelUrl = `/web-splat-model/${encodedModelId}`;
+                let sceneQuery = '';
+
+                try {
+                    const sceneHead = await fetch(`/web-splat-scene/${encodedModelId}`, {
+                        method: 'HEAD',
+                        cache: 'no-store',
+                    });
+                    if (sceneHead.ok) {
+                        sceneQuery = `&scene=${encodeURIComponent(`/web-splat-scene/${encodedModelId}`)}`;
+                    }
+                } catch (_) {
+                    // scene is optional for web-splat
+                }
+
+                const src = `/web-splat/?file=${encodeURIComponent(modelUrl)}${sceneQuery}&maxShDeg=0`;
+
+                const iframe = document.createElement('iframe');
+                iframe.id = 'web-splat-frame';
+                iframe.src = src;
+                iframe.style.width = '100%';
+                iframe.style.height = '100%';
+                iframe.style.border = '0';
+                iframe.style.background = '#000';
+                iframe.setAttribute('title', 'web-splat viewport');
+
+                objectViewer.innerHTML = '';
+                objectViewer.appendChild(iframe);
+                webSplatIframe = iframe;
+
+                await new Promise((resolve) => iframe.addEventListener('load', resolve, { once: true }));
+
+                for (let i = 0; i < 240; i++) {
+                    const win = webSplatIframe?.contentWindow;
+                    if (win && win.webSplatReady && typeof win.setWebSplatCameraPose === 'function') {
+                        webSplatReady = true;
+                        break;
+                    }
+                    await new Promise((r) => setTimeout(r, 50));
+                }
+
+                if (!webSplatReady) {
+                    throw new Error('web-splat viewer did not become ready');
+                }
+
+                const backendEl = document.getElementById('render-backend');
+                if (backendEl) backendEl.textContent = 'web-splat';
+            })();
+
+            return webSplatInitPromise;
+        }
+
+        function applyWebSplatPose() {
+            const win = webSplatIframe?.contentWindow;
+            if (!win || typeof win.setWebSplatCameraPose !== 'function') {
+                return false;
+            }
+
+            win.setWebSplatCameraPose(currentWebSplatPose());
+            return true;
+        }
+
         function sendPosition() {
             return new Promise((resolve, reject) => {
                 isLoading = true;
+
+                if (useWebSplat) {
+                    const t0 = performance.now();
+
+                    initWebSplatViewer()
+                        .then(() => {
+                            if (!applyWebSplatPose()) {
+                                throw new Error('web-splat camera bridge unavailable');
+                            }
+
+                            renderMs = performance.now() - t0;
+                            const el = document.getElementById('render-ms');
+                            if (el) el.textContent = renderMs.toFixed(2);
+
+                            const be = document.getElementById('render-backend');
+                            if (be) be.textContent = 'web-splat';
+
+                            if (typeof REC !== 'undefined' && REC.active) {
+                                const tMs = Math.round(t0 - REC.startWall);
+                                const durationMs = Math.round(performance.now() - t0);
+                                REC.events.push({
+                                    tMs, durationMs,
+                                    angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile: 0
+                                });
+                            }
+
+                            isLoading = false;
+                            resolve({ renderMs, width, height, profile: 0, backendHeader: 'web-splat' });
+                        })
+                        .catch((error) => {
+                            console.error('Error:', error);
+                            objectViewer.innerHTML = '<p>Error loading web-splat viewer</p>';
+                            isLoading = false;
+                            reject(error);
+                        });
+
+                    return;
+                }
 
                 const abrEnabled = abrToggle.checked;
                 let profile = 0;

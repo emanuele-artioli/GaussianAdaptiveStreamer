@@ -5,7 +5,7 @@ Gaussian Adaptive Streamer is a prototype system for adaptive streaming of 3D Ga
 # Platform Support
 
 - NVIDIA/CUDA systems: full gsplat rasterization path and hardware H.264 encoding when available.
-- macOS Apple Silicon systems: no CUDA required. The server uses MPS/CPU where possible and automatically falls back to preview-image rendering when gsplat/CUDA rasterization is unavailable.
+- macOS Apple Silicon systems: no CUDA required. `/player` uses web-splat (WebGPU + WASM) for client-side Gaussian rendering. The server-side `/render` path remains available and falls back to software rendering if gsplat/CUDA is unavailable.
 
 # Requirements
 
@@ -23,6 +23,9 @@ Gaussian Adaptive Streamer is a prototype system for adaptive streaming of 3D Ga
   - Apple Silicon Mac (M1/M2/M3)
   - ffmpeg with `h264_videotoolbox` (preferred) or `libx264` fallback
   - Use `requirements-macos.txt` (CUDA-free dependency set)
+  - Rust toolchain (`cargo`, `rustup`) to build web-splat assets
+  - `wasm-bindgen-cli` version `0.2.113` (must match web-splat dependency)
+  - `wasm32-unknown-unknown` target for Rust
 
 ## Directory structure
 
@@ -95,7 +98,25 @@ python -c "import torch; print('Torch:', torch.__version__); print('CUDA availab
 
 - `requirements.txt` installs CUDA 11.8 PyTorch wheels for NVIDIA environments.
 - `requirements-macos.txt` avoids CUDA-only dependencies for Apple Silicon.
-- In non-CUDA environments, rendering uses the software point-splat fallback by default. Preview-image mode is only used as a last-resort fallback when software rendering fails.
+- On macOS, `/player` uses web-splat when its build artifacts are present.
+- The server-side `/render` endpoint still uses `gsplat/software/preview` backend selection (for legacy player, DASH pipeline, and image capture flows).
+
+## Build web-splat assets (required for `/player`)
+
+Run this once (or whenever web-splat code changes):
+
+```bash
+cd web-splat
+. "$HOME/.cargo/env"
+rustup target add wasm32-unknown-unknown
+cargo install -f wasm-bindgen-cli --version 0.2.113
+bash build_wasm.sh
+```
+
+Expected generated files:
+
+- `web-splat/public/web_splats.js`
+- `web-splat/public/web_splats_bg.wasm`
 
 ## Runtime Behavior and Configuration
 
@@ -109,7 +130,7 @@ The server selects torch device in this order:
 
 ### Render backend selection
 
-The renderer selects backend as follows:
+For server-side `/render`, the renderer selects backend as follows:
 
 - `gsplat` backend when CUDA + gsplat are available
 - `software` backend otherwise (CPU point-splat fallback for non-CUDA systems, including Apple Silicon)
@@ -126,6 +147,25 @@ When rendering requests are served, responses include `X-Render-Backend` to indi
 Software renderer tuning:
 
 - `GS_SOFTWARE_MAX_POINTS` controls max points rendered per frame (default: `120000`). Lower this value to improve FPS on slower CPUs.
+
+### Player selection (`/player`)
+
+- Default behavior: `/player?modelId=<id>` opens the GaussianAdaptiveStreamer GUI and drives a web-splat viewport inside it.
+- If `static/models/<id>/cameras.json` exists, it is passed automatically as the optional scene file.
+- If web-splat assets are missing, `/player` falls back to the legacy server-rendered page.
+- For large `.ply` files, `/web-splat-model/<id>` automatically builds and serves a cached downsampled copy under `static/web-splat-cache` to avoid browser unpack stalls.
+
+Override with:
+
+- `GS_PLAYER_BACKEND=legacy` to force the old `/player-legacy` behavior.
+- `GS_PLAYER_BACKEND=web-splat-gui` (or unset) to use GUI + embedded web-splat (camera bridge mode).
+- `GS_PLAYER_BACKEND=web-splat-standalone` to use direct redirect into the standalone web-splat page.
+
+Web-splat downsampling tuning:
+
+- `WEB_SPLAT_MAX_PLY_BYTES` (default `12000000`, minimum enforced `2500000`) triggers downsampling when source PLY exceeds this byte size.
+- `WEB_SPLAT_MAX_POINTS` (default `50000`, minimum enforced `5000`) controls the maximum points kept in cached browser copies.
+- `WEB_SPLAT_FORCE_SH0` (default `1`) strips higher-order SH coefficients in cached browser copies so web-splat runs with SH degree 0.
 
 ### ffmpeg encoder selection
 
@@ -176,6 +216,7 @@ Linux equivalent command:
 
 **Note:**
 - For trying the experimental version with dash.js as player type instead of /models-ui, go to /player-dash.
+- To open the old server JPEG viewer directly, use `/player-legacy?modelId=<id>`.
 - Close Google Chrome before running this command.
 - To open a different page with the helper script, pass a path: `bash scripts/launch_quic_chrome.sh player-dash`.
 - On macOS, `open -a "Google Chrome" --args ...` can launch Chrome but ignore the URL argument. Prefer `bash scripts/launch_quic_chrome.sh`.
