@@ -15,7 +15,7 @@ options.add_argument("--origin-to-force-quic-on=140.114.79.80:4433")
 driver = webdriver.Chrome(options=options)
 bw_limit_abspath = "/home/tonyhung/Desktop/GaussianAdaptiveStreamer/scripts/bandwidth_fluctuations.sh"
 
-scene = "playroom"
+scene = "train"
 driver.get(f"https://140.114.79.80:4433/player?modelId={scene}")
 
 driver.implicitly_wait(0.5)
@@ -51,6 +51,6 @@ for id in range(1, 5):
             os.kill(bw_limit.pid, signal.SIGKILL)
             driver.execute_script("console.clear();")
 
-    # latencies = ["5", "10", "20", "40", "80"]
+    # latencies = ["5", "10", "20", "40"]
 
 driver.quit()

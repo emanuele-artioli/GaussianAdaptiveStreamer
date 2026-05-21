@@ -9,6 +9,7 @@
     <script src="/static/abrs/L2A.js"></script>
     <script src="/static/abrs/Latency.js"></script>
     <script src="/static/abrs/LoL+.js"></script>
+    <script src="/static/abrs/Throughput.js"></script>
     <script src="/static/neural.js"></script>  
     <script src="/static/OPFSWorker.js"></script>
 </head>
@@ -406,7 +407,7 @@
 
         function update() {
             requestAnimationFrame(update);
-            if (isLoading || keysPressed.size === 0) return;
+            // if (isLoading || keysPressed.size === 0) return;
 
             let updated = false;
             const rad = angle * Math.PI / 180;
@@ -429,11 +430,6 @@
 
             if (updated) {
                 positionDisplay.textContent = `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
-                sendPosition().then(result => {
-                    console.log("Image rendered", result);
-                }).catch(err => {
-                    console.error("Failed", err);
-                });
             }
         }
 
@@ -501,7 +497,6 @@
                 dummy_vid.replaceWith(vid_placeholder);
                 dummy_vid = vid_placeholder;
             }
-            updateImage();
 
         }
 
@@ -528,7 +523,7 @@
             } catch (_) {
                 // best effort cleanup
             }
-            updateImage();
+            // updateImage();
         }
 
         async function waitForVideoReady(videoEl, timeoutMs = 5000) {
@@ -774,18 +769,6 @@
             });
         }
 
-
-
-        function updateImage() {
-            sendPosition().then(result => {
-                console.log("Image rendered", result);
-            }).catch(err => {
-                console.error("Failed", err);
-            });
-        }
-
-        // Load initial image and start the loop
-        updateImage();
         update();
     </script>
     <script>
@@ -1273,6 +1256,177 @@
       saveImagesBtn.disabled = false;
     }
   });
+</script>
+<script>
+    async function WebTransportStart(url) {
+        const transport = new WebTransport(url);
+        transport.closed.then(() => {
+            console.log(`The HTTP/3 connection to ${url} closed gracefully.`);
+        }).catch((error) => {
+            console.error(`The HTTP/3 connection to ${url} closed due to ${error}.`);
+        });
+        
+        await transport.ready;
+        return transport;
+    }
+
+    const throughputABR = new ThroughputABR();
+    let _profile = null;
+    async function WT_SendCameraConfig(writer) {
+        // const profile = abr.pickProfile(width, height);
+        // abr.startRequest(profile, width, height);
+        await writer.ready;
+        _profile = throughputABR.pickProfile();
+        const msg = JSON.stringify({
+            modelId, angle, elevation, 
+            x, y, z, fx, fy, cx, cy, 
+            width, height, profile: _profile,
+            timestemp: Date.now()
+        });
+        const encoded = encodeMessage(msg);
+        await writer.write(encoded);
+
+        requestAnimationFrame(function() {WT_SendCameraConfig(writer);});
+    }
+
+    function encodeMessage(msg) {
+        const encoder = new TextEncoder();
+        const msgArray = encoder.encode(msg);
+
+        const header = new Uint8Array(4);
+        const view = new DataView(header.buffer);
+        view.setInt32(0, msgArray.length, false); // Big-endian
+
+        const full_msg = new Uint8Array(4 + msgArray.byteLength);
+        full_msg.set(header, 0);
+        full_msg.set(msgArray, 4);
+
+        return full_msg;
+    }
+    
+    async function WT_ReceiveImage(reader) {
+        while (true) {
+            const {value, done} = await reader.read();
+            if (done) {
+                break;
+            }
+            
+            throughputABR.addReceiveBytes(value.length);
+            handleChunks(value);
+        }
+    }
+
+    const chunksBuffer = new Map();
+    function handleChunks(data) {
+        const view = new DataView(data.buffer);
+        const imageId = view.getUint32(0);
+        const chunkIdx = view.getUint8(4);
+        const totalChunks = view.getUint8(5);
+        const timestemp = view.getBigUint64(6, false);
+        const render_ms = view.getFloat32(14, false);
+        const payload = data.slice(18);
+        if (!chunksBuffer.has(imageId)) {
+            const timeout = setTimeout(() => {
+                if (chunksBuffer.has(imageId)) {
+                    console.warn(`Image ${imageId} timed out. Dropping.`);
+                    chunksBuffer.delete(imageId);
+                }
+            }, 100);
+
+            chunksBuffer.set(imageId, {
+                data: new Array(totalChunks).fill(null),
+                timer: timeout,
+                receivedCount: 0,
+                firstSendTime: Number(timestemp),
+                firstReceiveTime: performance.timeOrigin + performance.now(),
+                renderMs: render_ms
+            });
+        }
+
+        const entry = chunksBuffer.get(imageId);
+        if (entry.data[chunkIdx] === null) {
+            entry.data[chunkIdx] = payload;
+            entry.receivedCount++;
+        }
+        entry[chunkIdx] = payload;
+
+        if (entry.receivedCount === totalChunks) {
+            clearTimeout(entry.timer);
+            const fullImage = new Blob(entry.data, { type: 'image/jpeg' });
+            renderImage(fullImage, entry.renderMs);
+
+            throughputABR.renderMs = entry.renderMs;
+            throughputABR.updateChunkCompleteTime(entry.firstSendTime, performance.now());
+            throughputABR.updateProcessingTime((performance.timeOrigin + performance.now() - entry.firstReceiveTime)
+                 * (entry.receivedCount + 1) / entry.receivedCount);
+            // throughputABR.calcThroughput(fullImage.size - 1350, performance.timeOrigin + performance.now() - entry.firstReceiveTime);
+
+            chunksBuffer.delete(imageId); // Clearup
+            
+            transport.then(async (wt) => {
+                const stats = await wt.getStats();
+                const rtt = stats.smoothedRtt;
+                throughputABR.updateWithEstimatedRTT(rtt);
+            })
+        }
+    }
+
+    function renderImage(fullImage, renderMs) {
+        const ctx = canvas.getContext('2d', { alpha: false });
+        const url = URL.createObjectURL(fullImage);
+        const image = new Image();
+        image.onload = () => {
+            const img_width = image.naturalWidth;
+            const img_height = image.naturalHeight;
+            const scale = 1;
+
+            canvas.width = img_width * scale;
+            canvas.height = img_height * scale;
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+
+            ctx.drawImage(image, 0, 0, width, height, 0, 0, width, height);
+            frameCount++;
+            URL.revokeObjectURL(url);
+        };
+        image.src = url;
+
+        const renderTime = document.getElementById('render-ms');
+        renderTime.innerHTML = renderMs.toFixed(2);
+    }
+
+    const route = 'wt';
+    const url = `${window.location.origin}/${route}`
+    const transport = WebTransportStart(url);
+    
+    transport.then((wt) => {
+        const stream = wt.createUnidirectionalStream();
+        return stream;
+    })
+    .then((stream) => {
+        const writer = stream.getWriter();
+        WT_SendCameraConfig(writer);
+
+        window.addEventListener("beforeunload", () => {
+            const encoded = encodeMessage("{\"closed\":\"1\"}");
+            writer.write(encoded);
+        });
+    });
+
+    transport.then((wt) => {
+        const readableStream = wt.datagrams.readable;
+        const reader = readableStream.getReader();
+        WT_ReceiveImage(reader);
+    });
+
+    transport.then((wt) => {
+        setInterval(() => {
+            const stats = wt.getStats();
+            stats.then((stat) => {
+                console.log("WebTransport stats:", stat);
+            });
+        }, 1000);
+    });
 </script>
 
 </body>
