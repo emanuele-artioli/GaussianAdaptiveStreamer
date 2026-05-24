@@ -52,8 +52,9 @@ class UserState:
         self.profile = 0
         self.modelID = None
         self.model = None
-        self.fps = 60
+        self.clientTimestemp = 0
         self.lock = asyncio.Lock()
+        self.fps = 60
 
         self.image_id = 0
         self.imageIDLock = asyncio.Lock()
@@ -75,13 +76,14 @@ class UserState:
             self.width = msg_json["width"]
             self.height = msg_json["height"]
             self.profile = msg_json["profile"]
+            self.clientTimestemp = int(msg_json["timestemp"])
 
             if self.modelID != msg_json["modelId"]:
                 self.modelID = msg_json["modelId"]
                 self.model = get_model(self.modelID)
         
 
-    async def getPos(self):
+    async def getData(self):
         async with self.lock:
             ret = (
                 self.azimuth, self.elevation, 
@@ -89,8 +91,9 @@ class UserState:
                 self.fx, self.fy, self.cx, self.cy,
                 self.width, self.height, self.profile, self.model
             )
+            timestemp = self.clientTimestemp
 
-        return ret
+        return ret, timestemp
     
     async def getNextImageId(self):
         async with self.imageIDLock:
@@ -155,7 +158,7 @@ async def RenderAndSendImage(send: Send, userID: int):
 
     await ensure_started()
     user = users_data[userID]
-    user_data = await user.getPos()
+    user_data, timestemp = await user.getData()
     if user_data[-1] is None:
         return 0.0
     
@@ -170,15 +173,16 @@ async def RenderAndSendImage(send: Send, userID: int):
         start = i * MAX_DATAGRAM_SIZE
         end = start + MAX_DATAGRAM_SIZE
         chunk_data = jpeg[start:end]
-        time_ms = int(time.time_ns() // 1e6) # uint64 timestamp in ms
-        header = struct.pack("!IBBQf", image_id, i, total_chunks, time_ms, render_ms)
+        header = struct.pack("!IBBQf", image_id, i, total_chunks, timestemp, render_ms)
         await send(
             {
                 "data": header + chunk_data,
                 "type": "webtransport.datagram.send",
+                "image_id": image_id
             }
         )
 
+    fin_time = time.time()
     return render_ms
     
 
@@ -191,6 +195,8 @@ starlette = Starlette(
         Route("/models", routes.get_list_of_all_available_models, methods=["GET"]), 
         Route("/models-ui", routes.models_page, methods=["GET"]),
         Route("/player", routes.player_page, methods=["GET"]),
+        Route("/player-wt", routes.player_wt_page, methods=["GET"]),
+        Route("/experiment_data", routes.receive_experiment_data, methods=["POST"]),
         Route("/loadModel", routes.load_model, methods=["POST"]),
         Route("/movement", routes.save_movements, methods=["POST"]),
         Route("/saveImages", routes.save_images, methods=["POST"]),

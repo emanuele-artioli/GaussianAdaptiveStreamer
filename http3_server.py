@@ -133,9 +133,12 @@ class WebTransportHandler:
                 )
             end_stream = True
         elif message["type"] == "webtransport.datagram.send":
-            self.connection.send_datagram(
-                stream_id=self.stream_id, data=message["data"]
-            )
+            if len(self.connection._quic._datagrams_pending) < 100:
+                self.connection.send_datagram(
+                    stream_id=self.stream_id, data=message["data"]
+                )
+            else:
+                logging.warning("Dropping datagram because of congestion. Current pending datagrams: %d", len(self.connection._quic._datagrams_pending))
         elif message["type"] == "webtransport.stream.send":
             self.connection._quic.send_stream_data(
                 stream_id=message["stream"], data=message["data"]

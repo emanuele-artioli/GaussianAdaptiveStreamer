@@ -6,9 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>3D Object Viewer</title>
     <link rel="stylesheet" href="/static/style.css" />
-    <script src="/static/abrs/L2A.js"></script>
-    <script src="/static/abrs/Latency.js"></script>
-    <script src="/static/abrs/LoL+.js"></script>
+    <script src="/static/abrs/Throughput.js"></script>
     <script src="/static/neural.js"></script>  
     <script src="/static/OPFSWorker.js"></script>
 </head>
@@ -31,15 +29,8 @@
 
             <label class="row">
                 <span>Auto Quality (ABR)</span>
-                <input type="checkbox" id="abr-enabled" checked />
+                <input type="checkbox" id="abr-enabled" checked disabled/>
             </label>
-
-            <label for="abr-algo">ABR Algorithm</label>
-            <select id="abr-algo">
-                <option value="simple" selected>Simple (Latency)</option>
-                <option value="l2a">L2A</option>
-                <option value="lol+">LoL+</option>
-            </select>
 
             <label for="resolution">Resolution</label>
             <select id="resolution">
@@ -292,16 +283,6 @@
         });
     </script>
     <script>
-        const ABRFactory = {
-            create(kind, resSelect) {
-                switch ((kind).toLowerCase()) {
-                    case 'l2a': return new L2A_ABR(resSelect);
-                    case 'lol+': return new LoLPlusABR(resSelect);
-                    default: return new LatencyABR(resSelect);
-                }
-            }
-        };
-
         const urlParams = new URLSearchParams(window.location.search);
         const modelId = urlParams.get("modelId"); // string or null
 
@@ -350,8 +331,6 @@
             }
         });
 
-        let abr = ABRFactory.create(abrAlgoSelect.value, resolutionSelect);
-
         let angle = 180;
         let elevation = 0;
         let x = 0;
@@ -385,17 +364,17 @@
             prevTime = curTime;
         }, 1000);
 
-        abrToggle.addEventListener('change', () => {
-
-        });
-
-
         // Handle keyboard events
         document.addEventListener('keydown', (event) => {
             const key = event.key.toLowerCase();
             if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 's', 'a', 'd', ' ', 'shift'].includes(key)) {
-                event.preventDefault();
-                keysPressed.add(key);
+                const activeElement = document.activeElement;
+                const inputs = ['input'];
+
+                if (activeElement && inputs.indexOf(activeElement.tagName.toLowerCase()) === -1) {
+                    event.preventDefault();
+                    keysPressed.add(key);
+                }
             }
         });
 
@@ -429,14 +408,8 @@
 
             if (updated) {
                 positionDisplay.textContent = `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
-                sendPosition().then(result => {
-                    console.log("Image rendered", result);
-                }).catch(err => {
-                    console.error("Failed", err);
-                });
             }
         }
-
 
         function applyConfig() {
             const [w, h] = resolutionSelect.value.split('x').map(Number);
@@ -452,10 +425,6 @@
             posStep = parseFloat(document.getElementById('pos-step').value);
             profileChoosen = document.getElementById('profile')?.value;
 
-
-            // Commit ABR state from the checkbox
-            abrEnabledActive = abrToggle.checked;
-            abr = ABRFactory.create(abrAlgoSelect.value, resolutionSelect)
 
             cx = width / 2; cy = height / 2;
             document.getElementById('cx').value = cx;
@@ -501,7 +470,6 @@
                 dummy_vid.replaceWith(vid_placeholder);
                 dummy_vid = vid_placeholder;
             }
-            updateImage();
 
         }
 
@@ -528,7 +496,6 @@
             } catch (_) {
                 // best effort cleanup
             }
-            updateImage();
         }
 
         async function waitForVideoReady(videoEl, timeoutMs = 5000) {
@@ -654,139 +621,6 @@
             return (superResRestore.value !== 'None') || (superResUpscale.value !== 'None');
         }
 
-        function sendPosition() {
-            return new Promise((resolve, reject) => {
-                isLoading = true;
-
-                const abrEnabled = abrToggle.checked;
-                let profile = 0;
-                if (abrEnabled) {
-                    profile = abr.pickProfile(width, height);   // decide for this request
-                    abr.startRequest(profile, width, height);   // timestamp the request
-                } else {
-                    profile = profileChoosen;
-                }
-
-                const tFetchStart = performance.now();
-
-                fetch('/render', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        modelId, angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
-                    }),
-                })
-                    .then(async (response) => {
-                        const contentLength = Number(response.headers.get('Content-Length') || 0);
-                        const renderHeader = response.headers.get('X-Render-Time-Ms');
-                        renderMs = renderHeader != null ? parseFloat(renderHeader) : NaN;
-
-                        const blob = await response.blob();
-                        return { blob, contentLength, renderMs };
-                    })
-                    .then(({ blob, contentLength, renderMs }) => {
-                        const imgUrl = URL.createObjectURL(blob);
-                        const img = new Image();
-
-                        img.onload = () => {
-                            const stage_placeholder = document.getElementById('stage_placeholder');
-                            stage_placeholder.style.display = "none";
-
-                            const displayW = Math.round(width);
-                            const displayH = Math.round(height);
-
-                            const rx = img.naturalWidth;
-                            const ry = img.naturalHeight;
-
-                            const scale = window.devicePixelRatio || 1;
-                            // const canvas = document.createElement('canvas');
-                            canvas.width = displayW * scale;
-                            canvas.height = displayH * scale;
-                            canvas.style.width = displayW + 'px';
-                            canvas.style.height = displayH + 'px';
-
-                            const ctx = canvas.getContext('2d', { alpha: false });
-                            ctx.imageSmoothingEnabled = true;
-                            ctx.imageSmoothingQuality = 'low';
-                            ctx.scale(scale, scale);
-
-                            ctx.drawImage(img, 0, 0, rx, ry, 0, 0, displayW, displayH);
-                            if (super_res && EXP_RUNNING && shouldCaptureSampledSRFrame(image_id)) {
-                                srCaptureAttempted++;
-                                const expPart = encodeURIComponent(expFileName.value || 'exp');
-                                const runPart = encodeURIComponent(sr_saveFolder || 'run');
-                                const framePart = Number.isFinite(image_id) ? image_id : 0;
-                                const sr_fileName = `exp=${expPart}__run=${runPart}__frame=${framePart}.png`;
-                                super_res_canvas.toBlob((sr_blob) => {
-                                    if (!sr_blob) {
-                                        srCaptureBlobNull++;
-                                        console.warn('[SR] toBlob returned null; sampled SR frame was skipped', sr_fileName);
-                                        return;
-                                    }
-                                    srCapturePosted++;
-                                    pendingSrWrites++;
-                                    worker.postMessage({blob: sr_blob, filename: sr_fileName});
-                                }, 'image/png');
-                            }
-
-                            isLoading = false;
-
-                            if (abrEnabled) {
-                                const bytes = contentLength || blob.size || 0;
-                                abr.endRequest(bytes, rx, ry, renderMs);
-                            }
-
-                            if (typeof REC !== 'undefined' && REC.active) {
-                                const tMs = Math.round(tFetchStart - REC.startWall);
-                                const durationMs = Math.round(performance.now() - tFetchStart);
-                                REC.events.push({
-                                    tMs, durationMs,
-                                    angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
-                                });
-                            }
-                            console.log(Math.round(performance.now() - tFetchStart));
-
-                            if (!Number.isNaN(renderMs)) {
-                                const el = document.getElementById('render-ms');
-                                if (el) el.textContent = renderMs.toFixed(2);
-                            }
-
-                            URL.revokeObjectURL(imgUrl);
-                            resolve({ blob, renderMs, width, height, profile });
-                        };
-
-                        img.onerror = () => {
-                            objectViewer.innerHTML = '<p>Error loading image</p>';
-                            isLoading = false;
-                            if (abrEnabled) abr.endRequest(0);
-                            URL.revokeObjectURL(imgUrl);
-                            reject(new Error("Image load failed"));
-                        };
-                        frameCount++;
-                        img.src = imgUrl;
-                    })
-                    .catch(error => {
-                        console.error('Error:', error);
-                        objectViewer.innerHTML = '<p>Error loading image</p>';
-                        isLoading = false;
-                        if (abrEnabled) abr.endRequest(0);
-                        reject(error);
-                    });
-            });
-        }
-
-
-
-        function updateImage() {
-            sendPosition().then(result => {
-                console.log("Image rendered", result);
-            }).catch(err => {
-                console.error("Failed", err);
-            });
-        }
-
-        // Load initial image and start the loop
-        updateImage();
         update();
     </script>
     <script>
@@ -903,7 +737,6 @@
     }
 
 
-
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
     async function waitForPendingSrWrites(timeoutMs = 20000) {
@@ -922,39 +755,6 @@
         events = Array.isArray(events) ? events : (events.events || []);
         if (!events.length) throw new Error('No events in file');
         return events;
-    }
-
-    function setAbrKind(kind) {
-        abrAlgoSelect.value = kind;
-        abr = ABRFactory.create(kind, resolutionSelect);
-    }
-
-    async function runOnePlayback(events, folderName, fileName) {
-        let frameid = 0;
-        for (const ev of events) {
-            if (EXP_CANCEL) throw new Error('CANCELLED');
-
-            if (ev.angle != null) angle = Number(ev.angle);
-            if (ev.elevation != null) elevation = Number(ev.elevation);
-            if (ev.x != null) x = Number(ev.x);
-            if (ev.y != null) y = Number(ev.y);
-            if (ev.z != null) z = Number(ev.z);
-
-            positionDisplay.textContent =
-                `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
-
-            image_id = frameid;
-            await sendPosition();
-            const predictedBps = abr.lastThroughputBps;
-            const profileIdx = abr.profile;
-            const networkName = expNetworkName.value;
-            const beginTime = abr.tBeginRequest
-            const endTime = abr.tEndRequest
-
-            reportPred(frameid, beginTime, endTime, networkName, folderName, fileName, predictedBps, profileIdx, renderMs);
-            saveMovement(frameid, folderName, fileName, modelId, angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profileIdx);
-            frameid++;
-        }
     }
 
     async function reportPred(frameid, beginTime, endTime, networkName, originFolderName, runFolderName, pred_bps, profile, renderMs) {
@@ -981,7 +781,8 @@
             console.warn("[predict] post failed", e);
         }
     }
-    async function saveMovement(frameid,originFolderName, runFolderName, modelId, angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile) {
+
+    async function saveMovement(frameid, originFolderName, runFolderName, modelId, angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile) {
         try {
         await fetch("/movement", {
             method: "POST",
@@ -1009,58 +810,6 @@
         } catch (e) {
             console.warn("[predict] post failed", e);
         }
-    }
-
-    async function runExperimentSequentialABRs({events, runsPerAbr, lockUI, autoExport}) {
-        const abrOrder = ['simple', 'l2a', 'lol+'];
-        const completedRuns = [];
-
-        const totalRuns = abrOrder.length * runsPerAbr;
-        let doneRuns = 0;
-
-        setExpUI({running:true, status:"Running", detail:"Preparing…", progress01:0});
-        EXP_CANCEL = false;
-
-        abrToggle.checked = true;
-        for (const abrKind of abrOrder) {
-        for (let r = 1; r <= runsPerAbr; r++) {
-            if (EXP_CANCEL) throw new Error('CANCELLED');
-
-            let fileName = `${abrKind}_run_${r}`;
-            let folderName = `${expFileName.value}`;
-            sr_saveFolder = fileName;
-
-            setAbrKind(abrKind);
-            image_id = 0;
-            // Optional: reset ABR internal state between runs, if your ABR classes support it
-            // (safer for reproducibility)
-            if (typeof abr.reset === 'function') abr.reset();
-
-            setExpUI({
-                running:true,
-                status:"Running",
-                detail:`ABR=${abrKind} (run ${r}/${runsPerAbr}) → folder: ${fileName}`,
-                progress01: doneRuns / totalRuns
-            });
-
-            await runOnePlayback(events, folderName, fileName);
-            completedRuns.push({ originFolderName: folderName, runFolderName: fileName });
-
-            doneRuns++;
-            setExpUI({running:true, progress01: doneRuns / totalRuns});
-
-            await sleep(150);
-        }
-        }
-
-
-
-        if (autoExport) {
-            const base = document.getElementById('exp-fileName')?.value?.trim();
-            if (base) window.open(`/export?fileName=${encodeURIComponent(base)}`, '_blank');
-        }
-
-        return completedRuns;
     }
 
     async function clearOPFSRootEntries(rootHandle) {
@@ -1192,13 +941,37 @@
             srRuntimeErrorMessage = "";
         }
         
-        const completedRuns = await runExperimentSequentialABRs({
-            events,
-            runsPerAbr,
-            lockUI: !!expLockUI.checked,
-            autoExport: !!expAutoExport.checked
-        });
+        throughputABR.reset()
+        EXP_CANCEL = false;
+
+        // run only WT experiment needed
+        setExpUI({running: true, status:"Running playback", detail:"Playing back recorded movements. Keep this tab open.", progress01:0});
+        runOnePlayback(events);
+        const data = await recordExperimentData();
+        setExpUI({running: false, status:"Playback finished", detail:"Finished playing back recorded movements. Experiment complete.", progress01:1});
         
+        if (!!EXP_CANCEL) {
+            setExpUI({running:false, status:"Cancelled", detail:"Experiment cancelled.", progress01:0});
+            return;
+        }
+        else {
+            for (const [i, d] of data.entries()) {
+                await fetch("/experiment_data", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    cache: "no-store",
+                    body: JSON.stringify({
+                        expName: baseName,
+                        latency: d.latency,
+                        fps: d.fps,
+                    })
+                });
+            }
+        }
+
+        return;
+
+        // TODO: needs to support super resolution in the future
         setExpUI({running: true, status:"Uploading", detail:"Finalizing sampled SR frames in browser storage. Keep this tab open.", progress01:0});
         await waitForPendingSrWrites();
 
@@ -1222,6 +995,45 @@
         } 
         }
     });
+
+    async function recordExperimentData() {
+        const data = new Array();
+        while (EXP_RUNNING) {
+            // save latency, fps each second
+            data.push({
+                latency: throughputABR.lastLatencyMs,
+                fps: document.getElementById("fps").textContent,
+            })
+            await sleep(1000);
+            if (EXP_CANCEL) break;
+        }
+        // console.log("Experiment data recorded:", data);
+        return data;
+    }
+
+    async function runOnePlayback(events) {
+        for (const ev of events) {
+            if (EXP_CANCEL) {
+                break;
+            }
+            applyEvent(ev);
+            // wait for one frame
+            await sleep(40);
+        }
+        EXP_RUNNING = false;
+    }
+
+    async function applyEvent(ev) {
+        if (!EXP_RUNNING) return;
+        if (ev.angle != null) angle = Number(ev.angle);
+        if (ev.elevation != null) elevation = Number(ev.elevation);
+        if (ev.x != null) x = Number(ev.x);
+        if (ev.y != null) y = Number(ev.y);
+        if (ev.z != null) z = Number(ev.z);
+
+        positionDisplay.textContent =
+            `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
+    }
 
     // Initial state
     setExpUI({running:false, status:"Idle", detail:"Configure settings and press Start.", progress01:0});
@@ -1274,6 +1086,174 @@
       saveImagesBtn.disabled = false;
     }
   });
+</script>
+<script>
+    async function WebTransportStart(url) {
+        const transport = new WebTransport(url);
+        transport.closed.then(() => {
+            console.log(`The HTTP/3 connection to ${url} closed gracefully.`);
+        }).catch((error) => {
+            console.error(`The HTTP/3 connection to ${url} closed due to ${error}.`);
+        });
+        
+        await transport.ready;
+        return transport;
+    }
+
+    const throughputABR = new ThroughputABR();
+    let _profile = null;
+    async function WT_SendCameraConfig(writer) {
+        // const profile = abr.pickProfile(width, height);
+        // abr.startRequest(profile, width, height);
+        await writer.ready;
+        _profile = throughputABR.pickProfile();
+        const msg = JSON.stringify({
+            modelId, angle, elevation, 
+            x, y, z, fx, fy, cx, cy, 
+            width, height, profile: _profile,
+            timestemp: Math.trunc(performance.timeOrigin + performance.now())
+        });
+        const encoded = encodeMessage(msg);
+        await writer.write(encoded);
+
+        // requestAnimationFrame(function() {WT_SendCameraConfig(writer);});
+        setTimeout(function() {WT_SendCameraConfig(writer);}, 10);
+    }
+
+    function encodeMessage(msg) {
+        const encoder = new TextEncoder();
+        const msgArray = encoder.encode(msg);
+
+        const header = new Uint8Array(4);
+        const view = new DataView(header.buffer);
+        view.setInt32(0, msgArray.length, false); // Big-endian
+
+        const full_msg = new Uint8Array(4 + msgArray.byteLength);
+        full_msg.set(header, 0);
+        full_msg.set(msgArray, 4);
+
+        return full_msg;
+    }
+    
+    let prev = 0;
+    async function WT_ReceiveImage(reader) {
+        while (true) {
+            const {value, done} = await reader.read();
+            if (done) {
+                break;
+            }
+            
+            throughputABR.addReceiveBytes(value.length);
+            // console.log("diff", performance.now() - prev);
+            prev = performance.now();
+            handleChunks(value);
+        }
+    }
+
+    const chunksBuffer = new Map();
+    function handleChunks(data) {
+        const view = new DataView(data.buffer, 0, 18);
+        const imageId = view.getUint32(0);
+        const chunkIdx = view.getUint8(4);
+        const totalChunks = view.getUint8(5);
+        const timestemp = view.getBigUint64(6, false);
+        const render_ms = view.getFloat32(14, false);
+        const payload = data.slice(18);
+        if (!chunksBuffer.has(imageId)) {
+            const timeout = setTimeout(() => {
+                if (chunksBuffer.has(imageId)) {
+                    console.warn(`Image ${imageId} timed out. Dropping.`);
+                    chunksBuffer.delete(imageId);
+                    throughputABR.reportTimeout();
+                }
+            }, 100);
+
+            chunksBuffer.set(imageId, {
+                data: new Array(totalChunks).fill(null),
+                timer: timeout,
+                receivedCount: 0,
+                firstSendTime: Number(timestemp),
+                firstReceiveTime: performance.timeOrigin + performance.now(),
+                renderMs: render_ms
+            });
+        }
+
+        const entry = chunksBuffer.get(imageId);
+        if (entry.data[chunkIdx] === null) {
+            entry.data[chunkIdx] = payload;
+            entry.receivedCount++;
+        }
+
+        if (entry.receivedCount === totalChunks) {
+            clearTimeout(entry.timer);
+            const fullImage = new Blob(entry.data, { type: 'image/jpeg' });
+            renderImage(fullImage, entry.renderMs);
+            throughputABR.renderMs = entry.renderMs;
+            throughputABR.updateChunkCompleteTime(entry.firstSendTime, performance.timeOrigin + performance.now());
+            throughputABR.updateProcessingTime((performance.timeOrigin + performance.now() - entry.firstReceiveTime)
+                 * (entry.receivedCount + 1) / entry.receivedCount);
+            throughputABR.calcFrameTimeDiff(performance.timeOrigin + performance.now() - entry.firstSendTime);
+                 // throughputABR.calcThroughput(fullImage.size - 1350, performance.timeOrigin + performance.now() - entry.firstReceiveTime);
+            chunksBuffer.delete(imageId); // Clearup
+            
+            transport.then(async (wt) => {
+                const stats = await wt.getStats();
+                const rtt = stats.smoothedRtt;
+                throughputABR.updateWithEstimatedRTT(rtt);
+            })
+        }
+    }
+
+    function renderImage(fullImage, renderMs) {
+        const ctx = canvas.getContext('2d', { alpha: false });
+        const url = URL.createObjectURL(fullImage);
+        const image = new Image();
+        image.onload = () => {
+            const img_width = image.naturalWidth;
+            const img_height = image.naturalHeight;
+            const scale = 1;
+
+            canvas.width = img_width * scale;
+            canvas.height = img_height * scale;
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+
+            ctx.drawImage(image, 0, 0, width, height, 0, 0, width, height);
+            frameCount++;
+            URL.revokeObjectURL(url);
+        };
+        image.src = url;
+
+        const renderTime = document.getElementById('render-ms');
+        renderTime.innerHTML = renderMs.toFixed(2);
+    }
+
+    const route = 'wt';
+    const url = `${window.location.origin}/${route}`
+    const transport = WebTransportStart(url);
+    
+    transport.then((wt) => {
+        const stream = wt.createUnidirectionalStream();
+        return stream;
+    })
+    .then((stream) => {
+        const writer = stream.getWriter();
+        WT_SendCameraConfig(writer);
+
+        window.addEventListener("beforeunload", () => {
+            const encoded = encodeMessage("{\"closed\":\"1\"}");
+            writer.write(encoded);
+        });
+    });
+
+    transport.then((wt) => {
+        const readableStream = wt.datagrams.readable;
+        const reader = readableStream.getReader();
+        WT_ReceiveImage(reader);
+    });
+
+    
+
 </script>
 
 </body>

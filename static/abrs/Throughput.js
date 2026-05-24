@@ -13,7 +13,7 @@ class ThroughputABR {
         this.goodStreak = 0;
         this.badStreak = 0;
         this.upgradeRequiredStreak = 20;
-        this.upgradeBoundaryMs = 15;
+        this.upgradeBoundaryMs = 30;
         this.downgradeRequiredStreak = 7;
         this.downgradeBoundaryMs = 50;
         
@@ -23,6 +23,7 @@ class ThroughputABR {
         this.processingTimeGoodStreakBoundary = 15;
 
         this.estimateLatency = 0;
+        this.lastLatencyMs = 0;
 
         this.lastSendTimestemp = 0;
         this.lastReceiveTimestemp = 0;
@@ -30,8 +31,11 @@ class ThroughputABR {
         this.accumulateDelta = 0;
         this.timeIncreaseStreak = 0;
         this.timeDeceraseStreak = 0;
-        this.increaseStreakBoundary = 6;
-        this.decreaseStreakBoundary = 15;
+        this.increaseStreakBoundary = 10;
+        this.decreaseStreakBoundary = 25;
+
+        this.timeBetweenFrame = 0;
+        this.smoothTimeBetweenFrame = 0;
 
         this.renderMs = 0;
 
@@ -40,7 +44,9 @@ class ThroughputABR {
 
         this.rx = 800;
         this.ry = 600;
-        this.bpp = 0;
+
+        this.timeoutStreak = 0;
+        this.timeoutStreakBoundary = 3;
 
         setInterval(this.estimateBitrate.bind(this), 500);
     }
@@ -83,10 +89,9 @@ class ThroughputABR {
         this.lastReceivedBytes = 0;
     }
 
-    calcFrameTimeDiff() {
-        const now = performance.now();
-        const diff = now - this.lastFinishProcessingTime;
-        this.lastFinishProcessingTime = now;
+    calcFrameTimeDiff(diff) {
+        this.timeBetweenFrame = diff;
+        this.smoothTimeBetweenFrame = this._ewma(this.smoothTimeBetweenFrame, this.timeBetweenFrame);
     }
 
     // calcThroughput(size, time) {
@@ -106,11 +111,13 @@ class ThroughputABR {
     }
 
     updateChunkCompleteTime(sendTime, compTime) {
+        this.timeoutStreak = 0;
         if (this.lastSendTimestemp == 0 || this.lastReceiveTimestemp == 0) {
             this.lastSendTimestemp = sendTime;
             this.lastReceiveTimestemp = compTime;
             return;
         }
+        this.lastLatencyMs = compTime - sendTime;
 
         const deltaSendTime = sendTime - this.lastSendTimestemp;
         const deltaRecvTime = compTime - this.lastReceiveTimestemp;
@@ -125,6 +132,7 @@ class ThroughputABR {
             this.timeIncreaseStreak = 0;
         }
 
+        this.accumulateDelta += delta;
         this.lastTimeDelta = delta;
         this.lastSendTimestemp = sendTime;
         this.lastReceiveTimestemp = compTime;
@@ -156,7 +164,7 @@ class ThroughputABR {
             return;
         }
 
-        if (this.timeIncreaseStreak > this.increaseStreakBoundary) {
+        if (this.timeIncreaseStreak > this.increaseStreakBoundary && this.accumulateDelta > 10) {
             this.downgrade();
             this.badStreak = 0;
             this.goodStreak = 0;
@@ -175,33 +183,25 @@ class ThroughputABR {
 
     downgrade() {
         this.accumulateDelta = 0;
-        if (this.profile < 3) {
+        if (this.profile < this.maxProfile) {
             this.profile++;
             return;
-        }
-
-        if (this.profile == 3) {
-            this.fps = 30;
         }
     }
 
     upgrade() {
+        if (this.profile == this.minProfile) {
+            return;
+        }
+
         if (this.processingTimeGoodStreak < this.processingTimeGoodStreakBoundary) {
             console.log("not safe for upgrade");
             return;
         }
 
         this.accumulateDelta = 0;
-        if (this.profile == 0) {
-            return;
-        }
 
-        if (this.profile == 3 && this.fps < 60) {
-            this.fps = 60;
-            return;
-        }
-
-        if (this.profile > 0) {
+        if (this.profile > this.minProfile) {
             this.profile--;
         }
     }
@@ -220,7 +220,7 @@ class ThroughputABR {
         this.goodStreak = 0;
         this.badStreak = 0;
         this.upgradeRequiredStreak = 20;
-        this.upgradeBoundaryMs = 15;
+        this.upgradeBoundaryMs = 30;
         this.downgradeRequiredStreak = 7;
         this.downgradeBoundaryMs = 50;
         
@@ -230,6 +230,7 @@ class ThroughputABR {
         this.processingTimeGoodStreakBoundary = 15;
 
         this.estimateLatency = 0;
+        this.lastLatencyMs = 0;
 
         this.lastSendTimestemp = 0;
         this.lastReceiveTimestemp = 0;
@@ -237,14 +238,27 @@ class ThroughputABR {
         this.accumulateDelta = 0;
         this.timeIncreaseStreak = 0;
         this.timeDeceraseStreak = 0;
-        this.increaseStreakBoundary = 6;
-        this.decreaseStreakBoundary = 15;
+        this.increaseStreakBoundary = 15;
+        this.decreaseStreakBoundary = 25;
+
+        this.timeBetweenFrame = 0;
+        this.smoothTimeBetweenFrame = 0;
+
+        this.renderMs = 0;
 
         this._timer = null;
         this.fps = 60;
 
         this.rx = 800;
         this.ry = 600;
-        this.bpp = 0;
+    }
+
+    reportTimeout() {
+        this.timeoutStreak++;
+        if (this.timeoutStreak > this.timeoutStreakBoundary) {
+            this.downgrade();
+            this.timeoutStreak = 0;
+            console.log("Downgrade based on timeout");
+        }
     }
 }
