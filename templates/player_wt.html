@@ -1,0 +1,1261 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D Object Viewer</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="/static/abrs/Throughput.js"></script>
+    <script src="/static/neural.js"></script>  
+    <script src="/static/OPFSWorker.js"></script>
+</head>
+
+<body>
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar" aria-label="Controls sidebar">
+        <button class="toggle-button" onclick="toggleSidebar()" aria-label="Toggle sidebar">☰</button>
+
+        <div class="options">
+            <h3>Camera Parameters</h3>
+
+            <label for="profile">Profile</label>
+            <select id="profile">
+                <option value="0" selected>0</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+            </select>
+
+            <label class="row">
+                <span>Auto Quality (ABR)</span>
+                <input type="checkbox" id="abr-enabled" checked disabled/>
+            </label>
+
+            <label for="resolution">Resolution</label>
+            <select id="resolution">
+                <option value="320x240">320x240</option>
+                <option value="480x360">480x360</option>
+                <option value="640x480">640x480</option>
+                <option value="800x600" selected>800x600</option>
+                <option value="1024x768">1024x768</option>
+                <option value="1280x720">1280x720</option>
+                <option value="1366x768">1366x768</option>
+                <option value="1600x900">1600x900</option>
+                <option value="1920x1080">1920x1080</option>
+                <option value="2560x1440">2560x1440</option>
+            </select>
+
+            <label>Super Resolution Model</label>
+            <div class="grid-2">
+                <label for="restore">Restore</label>
+                <select id="restore">
+                        <option value="None" selected>None</option>
+                        <option value="CNNM">CNNM</option>
+                        <option value="CNNSoftM">CNNSoftM</option>
+                        <option value="CNNSoftVL">CNNSoftVL</option>
+                        <option value="CNNVL">CNNVL</option>
+                        <option value="CNNUL">CNNUL</option>
+                        <option value="GANUUL">GANUUL</option>
+                </select>
+
+                <label for="upscale">Upscale</label>
+                <select id="upscale">
+                        <option value="None" selected>None</option>
+                        <option value="CNNx2M">CNNx2M</option>
+                        <option value="CNNx2VL">CNNx2VL</option>
+                        <option value="DenoiseCNNx2VL">DenoiseCNNx2VL</option>
+                        <option value="CNNx2UL">CNNx2UL</option>
+                        <option value="GANx3L">GANx3L</option>
+                        <option value="GANx4UUL">GANx4UUL</option>
+                </select>
+            </div>
+
+            <div class="grid-2">
+                <label for="cx">Principal X (cx)</label>
+                <input type="number" id="cx" value="400" />
+                <label for="cy">Principal Y (cy)</label>
+                <input type="number" id="cy" value="300" />
+            </div>
+
+            <div class="grid-2">
+                <label for="rot-step">Rotation Step (°)</label>
+                <input type="number" id="rot-step" value="1" step="0.1" />
+                <label for="pos-step">Position Step</label>
+                <input type="number" id="pos-step" value="0.1" step="0.01" />
+            </div>
+
+            <div class="grid-2">
+                <label for="fx">Focal X (fx)</label>
+                <input type="number" id="fx" value="1300" />
+                <label for="fy">Focal Y (fy)</label>
+                <input type="number" id="fy" value="800" />
+            </div>
+
+            <!-- Record -->
+            <h3 class="section">Record</h3>
+            <div class="card">
+                <div class="btn-row">
+                    <button id="start-rec" class="btn btn-danger">● Start Recording</button>
+                    <button id="stop-rec" class="btn" disabled>Stop &amp; Save</button>
+                </div>
+                <div id="rec-status" class="muted">Not recording</div>
+            </div>
+
+            <!-- Playback -->
+            <h3 class="section">Playback</h3>
+            <div class="card">
+                <input type="file" id="rec-file" accept=".json" class="file-native">
+
+
+                <div class="btn-row">
+                    <button id="start-playback" class="btn btn-primary">Start</button>
+                </div>
+
+                <div class="progress" id="pb-wrap" hidden>
+                    <div class="progress-bar" id="pb"></div>
+                </div>
+            </div>
+
+        <div>
+            <button class="apply-button" onclick="applyConfig()">Apply</button>
+        </div>
+
+        <h3 class="section">Save Images</h3>
+        <div class="card">
+        <label for="exp-name" class="muted" style="display:block; margin-bottom:6px;">Experiment name</label>
+        <input id="exp-name" type="text" placeholder="e.g. lte_run_01" />
+
+        <div class="btn-row" style="margin-top:10px;">
+            <button id="save-images" class="btn btn-primary">Save Images</button>
+        </div>
+
+        <div id="save-images-status" class="muted" style="margin-top:8px;"></div>
+        </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main-content">
+        <header class="topbar">
+            <div class="brand">
+                <span class="logo">🟦</span>
+                <span class="title">3D Object Viewer</span>
+            </div>
+            <div class="status">
+                <span class="chip">Server render: <strong><span id="render-ms">–</span> ms</strong></span>
+                <span class="chip">Frame rate: <strong><span id="fps">–</span> FPS</strong></span>
+                <span class="chip secondary">Position: <strong id="position-display">Angle: 180°, Elevation: 0°, X: 0,
+                        Y: 0, Z: 5</strong></span>
+            </div>
+        </header>
+
+        <section class="stage">
+            <div id="object-viewer" role="img" aria-label="Rendered 3D view">
+                <p class="placeholder" id="stage_placeholder">Loading 3D object…</p>
+                <canvas id="default_canvas" style="z-index: 10;"></canvas>
+                <canvas id="super_res_canvas" style="display: none; z-index: 0;"></canvas>
+                <video id="dummy_video" autoplay muted style="display: none;"></video>
+            </div>
+
+            <div class="hud">
+                <div class="hud-row">
+                    <span>Use Arrow keys to rotate, W/S for forward/back, A/D for left/right, Space/Shift for
+                        up/down</span>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Experiment Overlay -->
+<div id="exp-overlay" class="exp-overlay hidden" role="dialog" aria-modal="true" aria-label="Experiment setup">
+  <div class="exp-modal">
+    <div class="exp-header">
+      <h2>Experiment Setup</h2>
+      <button id="exp-close" class="exp-x" aria-label="Close">✕</button>
+    </div>
+
+    <div class="exp-body">
+      <div class="exp-grid">
+        <label>
+          <span>File name (experiment folder)</span>
+          <input id="exp-fileName" type="text" placeholder="e.g. lte_run_01" />
+        </label>
+
+        <label>
+          <span>Network name (for tc_status)</span>
+          <input id="exp-networkName" type="text" placeholder="e.g. LTE_2min" />
+        </label>
+
+        <label>
+          <span>Playback JSON</span>
+          <input type="file" id="exp-playbackFile" accept=".json" />
+        </label>
+
+        <label>
+          <span>Runs per ABR</span>
+          <input id="exp-runsPerAbr" type="number" min="1" step="1" value="1" />
+        </label>
+
+                <label>
+                    <span>Experiment SR Restore Model</span>
+                    <select id="exp-sr-restore"></select>
+                </label>
+
+                <label>
+                    <span>Experiment SR Upscale Model</span>
+                    <select id="exp-sr-upscale"></select>
+                </label>
+
+        <label class="exp-row">
+          <span>Disable manual input during run</span>
+          <input id="exp-lockUI" type="checkbox" checked />
+        </label>
+
+        <label class="exp-row">
+          <span>Auto export ZIP when finished</span>
+          <input id="exp-autoExport" type="checkbox" />
+        </label>
+      </div>
+
+      <div class="exp-status">
+        <div><strong>Status:</strong> <span id="exp-statusText">Idle</span></div>
+        <div class="exp-progress">
+          <div class="exp-bar" id="exp-bar" style="width:0%"></div>
+        </div>
+        <div class="exp-small" id="exp-detailText"></div>
+      </div>
+    </div>
+
+    <div class="exp-footer">
+      <button id="exp-start" class="btn btn-primary">Start experiment</button>
+      <button id="exp-cancel" class="btn" disabled>Cancel</button>
+    </div>
+  </div>
+</div>
+
+<button id="open-exp" class="btn btn-primary" style="position:fixed; right:16px; bottom:16px; z-index:20;">
+  Run Experiment
+</button>
+
+    <script>
+        // --- Minimal recorder state ---
+        const REC = {
+            active: false,
+            startWall: 0,
+            events: []
+        };
+
+        const btnStartRec = document.getElementById('start-rec');
+        const btnStopRec = document.getElementById('stop-rec');
+
+        btnStartRec.addEventListener('click', () => {
+            REC.active = true;
+            REC.startWall = performance.now();
+            REC.events = [];
+            btnStartRec.disabled = true;
+            btnStopRec.disabled = false;
+            console.log('[REC] started');
+        });
+
+        btnStopRec.addEventListener('click', () => {
+            if (!REC.active) return;
+            REC.active = false;
+            btnStartRec.disabled = false;
+            btnStopRec.disabled = true;
+
+            // Download JSON
+            const blob = new Blob([JSON.stringify(REC.events, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+
+            const pad = (n) => String(n).padStart(2, '0');
+            const d = new Date();
+            const fname = `recording-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.json`;
+
+            a.href = url;
+            a.download = fname;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+
+            console.log(`[REC] saved ${REC.events.length} events`);
+        });
+    </script>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const modelId = urlParams.get("modelId"); // string or null
+
+        const objectViewer = document.getElementById('object-viewer');
+        const positionDisplay = document.getElementById('position-display');
+        const sidebar = document.getElementById('sidebar');
+        const resolutionSelect = document.getElementById('resolution');
+        const abrToggle = document.getElementById('abr-enabled');
+        const abrAlgoSelect = document.getElementById('abr-algo');
+
+        const canvas = document.getElementById('default_canvas');
+        const super_res_canvas = document.getElementById('super_res_canvas');
+        const superResRestore = document.getElementById('restore');
+        const superResUpscale = document.getElementById('upscale');
+        let dummy_vid = document.getElementById('dummy_video');
+        let stream = canvas.captureStream();
+        let canvasMultiplier = 1;
+        let image_id = 0;
+        let activeSRConfig = null;
+        dummy_vid.srcObject = stream;
+        
+        const worker = new Worker('/static/OPFSWorker.js');
+        let sr_saveFolder = "";
+        let super_res = false;
+        const SAMPLE_FRAME_STRIDE = 12;
+        let pendingSrWrites = 0;
+        let srCaptureAttempted = 0;
+        let srCapturePosted = 0;
+        let srCaptureBlobNull = 0;
+        let srWorkerWriteSuccess = 0;
+        let srWorkerWriteError = 0;
+        let srRuntimeErrorMessage = "";
+        let srRequestedInRun = false;
+
+        worker.addEventListener('message', (event) => {
+            const status = event?.data?.status;
+            if (status === 'SUCCESS' || status === 'ERROR') {
+                pendingSrWrites = Math.max(0, pendingSrWrites - 1);
+            }
+            if (status === 'SUCCESS') {
+                srWorkerWriteSuccess++;
+            }
+            if (status === 'ERROR') {
+                srWorkerWriteError++;
+                console.warn('[OPFS] write failed', event?.data?.message);
+            }
+        });
+
+        let angle = 180;
+        let elevation = 0;
+        let x = 0;
+        let y = 0;
+        let z = 5;
+
+        // ACTIVE (applied) settings — only changed by Apply
+        let fx = 1300;
+        let fy = 800;
+        let cx = 400;
+        let cy = 300;
+        let width = 800;
+        let height = 600;
+        let rotStep = 1;
+        let posStep = 0.1;
+        let profileChoosen = 0;
+
+        let abrEnabledActive = abrToggle.checked;
+
+        let isLoading = false;
+        const keysPressed = new Set();
+
+        let frameCount = 0;
+        let prevCount = 0;
+        let prevTime = 0;
+        setInterval(() => {
+            const now = frameCount;
+            const curTime = performance.now();
+            document.getElementById("fps").innerHTML = `${Math.round((now - prevCount) * 1000 / (curTime - prevTime) * 10) / 10}`;
+            prevCount = now;
+            prevTime = curTime;
+        }, 1000);
+
+        // Handle keyboard events
+        document.addEventListener('keydown', (event) => {
+            const key = event.key.toLowerCase();
+            if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 's', 'a', 'd', ' ', 'shift'].includes(key)) {
+                const activeElement = document.activeElement;
+                const inputs = ['input'];
+
+                if (activeElement && inputs.indexOf(activeElement.tagName.toLowerCase()) === -1) {
+                    event.preventDefault();
+                    keysPressed.add(key);
+                }
+            }
+        });
+
+        document.addEventListener('keyup', (event) => {
+            const key = event.key.toLowerCase();
+            keysPressed.delete(key);
+        });
+
+        function update() {
+            requestAnimationFrame(update);
+            if (isLoading || keysPressed.size === 0) return;
+
+            let updated = false;
+            const rad = angle * Math.PI / 180;
+            const cosA = Math.cos(rad);
+            const sinA = Math.sin(rad);
+
+            // Rotations
+            if (keysPressed.has('arrowup')) { elevation = Math.min(90, elevation + rotStep); updated = true; }
+            if (keysPressed.has('arrowdown')) { elevation = Math.max(-90, elevation - rotStep); updated = true; }
+            if (keysPressed.has('arrowleft')) { angle = (angle - rotStep + 360) % 360; updated = true; }
+            if (keysPressed.has('arrowright')) { angle = (angle + rotStep) % 360; updated = true; }
+
+            // Translations
+            if (keysPressed.has('w')) { x += posStep * sinA; z += posStep * cosA; updated = true; }
+            if (keysPressed.has('s')) { x -= posStep * sinA; z -= posStep * cosA; updated = true; }
+            if (keysPressed.has('a')) { x -= posStep * cosA; z += posStep * sinA; updated = true; }
+            if (keysPressed.has('d')) { x += posStep * cosA; z -= posStep * sinA; updated = true; }
+            if (keysPressed.has('shift')) { y += posStep; updated = true; }
+            if (keysPressed.has(' ')) { y -= posStep; updated = true; }
+
+            if (updated) {
+                positionDisplay.textContent = `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
+            }
+        }
+
+        function applyConfig() {
+            const [w, h] = resolutionSelect.value.split('x').map(Number);
+            width = w;
+            height = h;
+
+            // Read camera + movement params
+            fx = parseFloat(document.getElementById('fx').value);
+            fy = parseFloat(document.getElementById('fy').value);
+            cx = parseFloat(document.getElementById('cx').value);
+            cy = parseFloat(document.getElementById('cy').value);
+            rotStep = parseFloat(document.getElementById('rot-step').value);
+            posStep = parseFloat(document.getElementById('pos-step').value);
+            profileChoosen = document.getElementById('profile')?.value;
+
+
+            cx = width / 2; cy = height / 2;
+            document.getElementById('cx').value = cx;
+            document.getElementById('cy').value = cy;
+
+
+            // Super resolution
+            let restoreModel = superResRestore.value;
+            let upscaleModel = superResUpscale.value;
+            super_res = (restoreModel != "None") || (upscaleModel != "None");
+            if (super_res) {
+                stream.removeTrack(stream.getTracks()[0]);
+                stream = canvas.captureStream();
+                super_res_canvas.style.display = "block";
+
+                let new_vid = document.createElement("video");
+                new_vid.autoplay = true;
+                new_vid.muted = true;
+                new_vid.srcObject = stream;
+                
+                dummy_vid.replaceWith(new_vid);
+                dummy_vid = new_vid;
+                dummy_vid.style.display = "block";
+                dummy_vid.style.visibility = "hidden";
+                const scale = window.devicePixelRatio || 1;
+                super_res_canvas.width = w * scale * canvasMultiplier;
+                super_res_canvas.height = h * scale * canvasMultiplier;
+                super_res_canvas.style.width = w + 'px';
+                super_res_canvas.style.height = h + 'px';
+
+                superResolutionRender(restoreModel, upscaleModel, w, h);
+            }
+            else {
+                activeSRConfig = null;
+                super_res_canvas.style.display = "none";
+                canvas.style.visibility = "";
+                // Prevent error when video is replaced by placeholder
+                if (typeof dummy_vid.pause === "function") dummy_vid.pause();
+
+                // Delete video element by replacing
+                let vid_placeholder = document.createElement("p");
+                vid_placeholder.style.display = "none";
+                dummy_vid.replaceWith(vid_placeholder);
+                dummy_vid = vid_placeholder;
+            }
+
+        }
+
+        function resolveNeuralModelCtor(modelName) {
+            if (modelName === "None") return null;
+            const ctor = webgpu_neural?.[modelName];
+            if (typeof ctor !== "function") {
+                throw new Error(`Model '${modelName}' is not available in neural.js`);
+            }
+            return ctor;
+        }
+
+        function rollbackSuperResolution(reason) {
+            console.error('[SR] Falling back to default renderer:', reason);
+            srRuntimeErrorMessage = String(reason?.message || reason || 'unknown SR error');
+            activeSRConfig = null;
+            super_res = false;
+            super_res_canvas.style.display = "none";
+            canvas.style.visibility = "";
+            try {
+                if (dummy_vid && typeof dummy_vid.pause === 'function') {
+                    dummy_vid.pause();
+                }
+            } catch (_) {
+                // best effort cleanup
+            }
+        }
+
+        async function waitForVideoReady(videoEl, timeoutMs = 5000) {
+            if (!videoEl) throw new Error('Missing SR video element');
+            if (videoEl.readyState >= 2 && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) return;
+
+            await new Promise((resolve, reject) => {
+                const onReady = () => {
+                    cleanup();
+                    resolve();
+                };
+                const onError = () => {
+                    cleanup();
+                    reject(new Error('SR stream video failed to start'));
+                };
+                const timer = setTimeout(() => {
+                    cleanup();
+                    reject(new Error('Timed out waiting for SR stream video metadata'));
+                }, timeoutMs);
+
+                function cleanup() {
+                    clearTimeout(timer);
+                    videoEl.removeEventListener('loadedmetadata', onReady);
+                    videoEl.removeEventListener('canplay', onReady);
+                    videoEl.removeEventListener('error', onError);
+                }
+
+                videoEl.addEventListener('loadedmetadata', onReady, { once: true });
+                videoEl.addEventListener('canplay', onReady, { once: true });
+                videoEl.addEventListener('error', onError, { once: true });
+            });
+        }
+
+        async function superResolutionRender(restoreModel, upscaleModel, widthPx, heightPx) {
+            // Start super_resolution render
+            const configKey = `${restoreModel}|${upscaleModel}|${widthPx}x${heightPx}`;
+            activeSRConfig = configKey;
+
+            let restoreCtor;
+            let upscaleCtor;
+            try {
+                restoreCtor = resolveNeuralModelCtor(restoreModel);
+                upscaleCtor = resolveNeuralModelCtor(upscaleModel);
+            } catch (err) {
+                rollbackSuperResolution(err);
+                return;
+            }
+
+            const r = /\d+/;
+            const mul = upscaleModel.match(r);
+            canvasMultiplier = mul == null ? 1 : Number(mul);
+            const scale = window.devicePixelRatio || 1;
+            super_res_canvas.width = widthPx * scale * canvasMultiplier;
+            super_res_canvas.height = heightPx * scale * canvasMultiplier;
+            super_res_canvas.style.width = widthPx + 'px';
+            super_res_canvas.style.height = heightPx + 'px';
+
+            try {
+                await dummy_vid.play();
+            } catch (err) {
+                rollbackSuperResolution(err);
+                return;
+            }
+
+            try {
+                await waitForVideoReady(dummy_vid);
+            } catch (err) {
+                rollbackSuperResolution(err);
+                return;
+            }
+
+            canvas.style.visibility = "hidden";
+
+            Promise.resolve(webgpu_neural.render({
+                video: dummy_vid,
+                canvas: super_res_canvas,
+                pipelineBuilder: (device, inputTexture) => {
+                    if (upscaleCtor == null) {
+                        const restore = new restoreCtor({
+                            device,
+                            inputTexture,
+                        });
+                        return [restore];
+                    }
+                    if (restoreCtor == null) {
+                        const upscale = new upscaleCtor({
+                            device,
+                            inputTexture,
+                        });
+                        return [upscale];
+                    }
+
+                    const upscale = new upscaleCtor({
+                        device,
+                        inputTexture,
+                    });
+                    const restore = new restoreCtor({
+                        device,
+                        inputTexture: upscale.getOutputTexture(),
+                    });
+
+                    return [upscale, restore];
+                },
+            })).then(() => {
+                if (activeSRConfig !== configKey) return;
+                srRuntimeErrorMessage = "";
+                console.log(`${restoreModel}, ${upscaleModel} is chosen for super resolution.`);
+            }).catch((err) => {
+                if (activeSRConfig !== configKey) return;
+                rollbackSuperResolution(err);
+            });
+        }
+
+        function toggleSidebar() {
+            sidebar.classList.toggle('collapsed');
+        }
+
+        function shouldCaptureSampledSRFrame(frameId) {
+            return Number.isInteger(frameId) && frameId >= 0 && (frameId % SAMPLE_FRAME_STRIDE === 0);
+        }
+
+        function isSRRequestedByUI() {
+            return (superResRestore.value !== 'None') || (superResUpscale.value !== 'None');
+        }
+
+        update();
+    </script>
+    <script>
+        const fileInput = document.getElementById('rec-file');
+        const startBtn = document.getElementById('start-playback');
+
+        startBtn.addEventListener('click', async () => {
+            const file = fileInput?.files?.[0];
+            if (!file) { alert('Select a JSON file first.'); return; }
+
+            try {
+                startBtn.disabled = true;
+
+                // --- Now start playback normally ---
+                const text = await file.text();
+                let events = JSON.parse(text);
+                events = Array.isArray(events) ? events : (events.events || []);
+                if (!events.length) throw new Error('No events in file');
+                for (const ev of events) {
+                    if (ev.angle != null) angle = Number(ev.angle);
+                    if (ev.elevation != null) elevation = Number(ev.elevation);
+                    if (ev.x != null) x = Number(ev.x);
+                    if (ev.y != null) y = Number(ev.y);
+                    if (ev.z != null) z = Number(ev.z);
+
+                    positionDisplay.textContent = `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
+
+                    await sendPosition();
+                    const predictedBps = abr.lastThroughputBps;
+                    const profileIdx = abr.profile;
+
+                    console.log(predictedBps, profileIdx)
+
+                    await reportPred(fileName, predictedBps, profileIdx, renderMs);
+                }
+
+            } catch (err) {
+                console.error(err);
+                alert('Playback failed: ' + err.message);
+            } finally {
+                startBtn.disabled = false;
+            }
+        });
+    </script>
+
+<script>
+    // ---------------- Experiment Runner ----------------
+    const overlay = document.getElementById('exp-overlay');
+    const openExpBtn = document.getElementById('open-exp');
+    const closeExpBtn = document.getElementById('exp-close');
+
+    const expStartBtn = document.getElementById('exp-start');
+    const expCancelBtn = document.getElementById('exp-cancel');
+
+    const expStatusText = document.getElementById('exp-statusText');
+    const expDetailText = document.getElementById('exp-detailText');
+    const expBar = document.getElementById('exp-bar');
+
+    const expFileName = document.getElementById('exp-fileName');
+    const expNetworkName = document.getElementById('exp-networkName');
+    const expPlaybackFile = document.getElementById('exp-playbackFile');
+    const expRunsPerAbr = document.getElementById('exp-runsPerAbr');
+    const expSrRestore = document.getElementById('exp-sr-restore');
+    const expSrUpscale = document.getElementById('exp-sr-upscale');
+    const expLockUI = document.getElementById('exp-lockUI');
+    const expAutoExport = document.getElementById('exp-autoExport');
+
+    let EXP_CANCEL = false;
+    let EXP_RUNNING = false;
+
+    function syncExpSrOptionsFromSidebar() {
+        if (!expSrRestore || !expSrUpscale) return;
+
+        expSrRestore.innerHTML = '';
+        expSrUpscale.innerHTML = '';
+
+        for (const opt of superResRestore.options) {
+            expSrRestore.appendChild(opt.cloneNode(true));
+        }
+        for (const opt of superResUpscale.options) {
+            expSrUpscale.appendChild(opt.cloneNode(true));
+        }
+
+        expSrRestore.value = superResRestore.value;
+        expSrUpscale.value = superResUpscale.value;
+    }
+
+    function applyExperimentSRToSidebarControls() {
+        if (!expSrRestore || !expSrUpscale) return;
+        superResRestore.value = expSrRestore.value;
+        superResUpscale.value = expSrUpscale.value;
+    }
+
+    function showOverlay() { 
+        syncExpSrOptionsFromSidebar();
+        overlay.classList.remove('hidden'); 
+    }
+    function hideOverlay() { 
+        if (!EXP_RUNNING) overlay.classList.add('hidden'); 
+    }
+
+    openExpBtn?.addEventListener('click', showOverlay);
+    closeExpBtn?.addEventListener('click', hideOverlay);
+
+    function setExpUI({running, status, detail, progress01}) {
+        if (status != null) expStatusText.textContent = status;
+        if (detail != null) expDetailText.textContent = detail;
+        if (progress01 != null) expBar.style.width = `${Math.max(0, Math.min(1, progress01)) * 100}%`;
+
+        EXP_RUNNING = !!running;
+        expStartBtn.disabled = EXP_RUNNING;
+        expCancelBtn.disabled = !EXP_RUNNING;
+        closeExpBtn.disabled = EXP_RUNNING;
+    }
+
+
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function waitForPendingSrWrites(timeoutMs = 20000) {
+        const start = performance.now();
+        while (pendingSrWrites > 0) {
+            if (performance.now() - start > timeoutMs) {
+                throw new Error('Timed out while waiting for SR frames to be written to OPFS.');
+            }
+            await sleep(50);
+        }
+    }
+
+    async function loadPlaybackEventsFromFile(file) {
+        const text = await file.text();
+        let events = JSON.parse(text);
+        events = Array.isArray(events) ? events : (events.events || []);
+        if (!events.length) throw new Error('No events in file');
+        return events;
+    }
+
+    async function reportPred(frameid, beginTime, endTime, networkName, originFolderName, runFolderName, pred_bps, profile, renderMs) {
+        try {
+        const res = await fetch("/metrics/predict", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            cache: "no-store",
+            body: JSON.stringify({
+                frameid,
+                networkName,
+                beginTime,
+                endTime,
+                originFolderName,
+                runFolderName,
+                pred_bps,
+                profile,
+                renderMs
+            })
+        });
+        const body = await res.json();
+        return body;
+        } catch (e) {
+            console.warn("[predict] post failed", e);
+        }
+    }
+
+    async function saveMovement(frameid, originFolderName, runFolderName, modelId, angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile) {
+        try {
+        await fetch("/movement", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            cache: "no-store",
+            body: JSON.stringify({
+                frameid,
+                originFolderName,
+                runFolderName,
+                modelId,
+                angle,
+                elevation,
+                x,
+                y,
+                z,
+                fx,
+                fy,
+                cx,
+                cy,
+                width,
+                height,
+                profile
+            })
+        });
+        } catch (e) {
+            console.warn("[predict] post failed", e);
+        }
+    }
+
+    async function clearOPFSRootEntries(rootHandle) {
+        for await (const [name] of rootHandle.entries()) {
+            await rootHandle.removeEntry(name, { recursive: true });
+        }
+    }
+
+    async function listOPFSFiles(rootHandle) {
+        const files = [];
+        for await (const [name, handle] of rootHandle.entries()) {
+            if (handle.kind === 'file') files.push({ name, handle });
+        }
+        return files;
+    }
+
+    async function uploadOPFSFiles(rootHandle) {
+        const files = await listOPFSFiles(rootHandle);
+        if (!files.length) {
+            let detail = 'No sampled SR frames found to upload.';
+            if (srRequestedInRun || super_res) {
+                detail += ` Capture attempts=${srCaptureAttempted}, posted=${srCapturePosted}, blob-null=${srCaptureBlobNull}, opfs-ok=${srWorkerWriteSuccess}, opfs-error=${srWorkerWriteError}.`;
+                if (srRuntimeErrorMessage) detail += ` SR fallback reason: ${srRuntimeErrorMessage}.`;
+            } else {
+                detail += ' SR is currently disabled.';
+            }
+            setExpUI({ running: true, status: 'Uploading', detail, progress01: 1 });
+            return 0;
+        }
+
+        let uploaded = 0;
+        for (const { name, handle } of files) {
+            const file = await handle.getFile();
+            await fetch('/save_sr_image', {
+                method: 'POST',
+                cache: 'no-store',
+                headers: { 'Content-Type': 'image/png', 'File-Name': `${name}` },
+                body: file
+            });
+
+            uploaded++;
+            setExpUI({
+                running: true,
+                status: 'Saving sampled frames',
+                detail: `Saving sampled frames ${uploaded}/${files.length}. Keep this tab open until status is Finished.`,
+                progress01: uploaded / files.length
+            });
+        }
+
+        return uploaded;
+    }
+
+    async function materializeSampledFramesForRuns(completedRuns, stride) {
+        const total = completedRuns.length;
+        let done = 0;
+        let totalSampled = 0;
+
+        for (const run of completedRuns) {
+            setExpUI({
+                running: true,
+                status: 'Saving sampled Original+GT',
+                detail: `Processing ${run.runFolderName} (${done + 1}/${total}) at stride=${stride}. (SR uploads are handled in the previous phase.) Keep this tab open until Finished.`,
+                progress01: total ? (done / total) : 1,
+            });
+
+            const res = await fetch('/materialize_sampled_frames', {
+                method: 'POST',
+                cache: 'no-store',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    originFolderName: run.originFolderName,
+                    runFolderName: run.runFolderName,
+                    stride
+                })
+            });
+
+            if (!res.ok) {
+                const txt = await res.text().catch(() => 'unknown server error');
+                throw new Error(`materialize_sampled_frames failed for ${run.runFolderName}: ${txt}`);
+            }
+
+            const body = await res.json().catch(() => ({}));
+            totalSampled += Number(body.sampled_frames || 0);
+            done += 1;
+            setExpUI({ running: true, progress01: total ? (done / total) : 1 });
+        }
+
+        return { runs: total, sampledFrames: totalSampled };
+    }
+
+    expCancelBtn.addEventListener('click', () => {
+        EXP_CANCEL = true;
+        setExpUI({running:true, status:"Stopping…", detail:"Cancelling after current request…"});
+    });
+
+    expStartBtn.addEventListener('click', async () => {
+        try {
+        // Gather values from overlay and apply to your active variables.
+        const baseName = (expFileName.value || '').trim();
+        if (!baseName) { alert("Please enter a file name."); return; }
+
+        const net = (expNetworkName.value || '').trim();
+        if (!net) { alert("Please enter a network name."); return; }
+
+        const pbFile = expPlaybackFile.files?.[0];
+        if (!pbFile) { alert("Please select a playback JSON."); return; }
+
+        const runsPerAbr = Math.max(1, parseInt(expRunsPerAbr.value || '1', 10));
+
+        const events = await loadPlaybackEventsFromFile(pbFile);
+
+        // Use SR models selected in experiment popup for this run.
+        applyExperimentSRToSidebarControls();
+
+        // Freeze SR intent for this run and force-apply current selections.
+        srRequestedInRun = isSRRequestedByUI();
+        applyConfig();
+        await sleep(50);
+
+        const root = await navigator.storage.getDirectory();
+        await clearOPFSRootEntries(root);
+        pendingSrWrites = 0;
+        srCaptureAttempted = 0;
+        srCapturePosted = 0;
+        srCaptureBlobNull = 0;
+        srWorkerWriteSuccess = 0;
+        srWorkerWriteError = 0;
+        if (!srRequestedInRun) {
+            srRuntimeErrorMessage = "";
+        }
+        
+        throughputABR.reset()
+        EXP_CANCEL = false;
+
+        // run only WT experiment needed
+        setExpUI({running: true, status:"Running playback", detail:"Playing back recorded movements. Keep this tab open.", progress01:0});
+        runOnePlayback(events);
+        const data = await recordExperimentData();
+        setExpUI({running: false, status:"Playback finished", detail:"Finished playing back recorded movements. Experiment complete.", progress01:1});
+        
+        if (!!EXP_CANCEL) {
+            setExpUI({running:false, status:"Cancelled", detail:"Experiment cancelled.", progress01:0});
+            return;
+        }
+        else {
+            for (const [i, d] of data.entries()) {
+                await fetch("/experiment_data", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    cache: "no-store",
+                    body: JSON.stringify({
+                        expName: baseName,
+                        latency: d.latency,
+                        fps: d.fps,
+                    })
+                });
+            }
+        }
+
+        return;
+
+        // TODO: needs to support super resolution in the future
+        setExpUI({running: true, status:"Uploading", detail:"Finalizing sampled SR frames in browser storage. Keep this tab open.", progress01:0});
+        await waitForPendingSrWrites();
+
+        setExpUI({running: true, status:"Uploading", detail:"Uploading sampled SR frames (if enabled). Keep this tab open until Finished.", progress01:0});
+        const uploadedCount = await uploadOPFSFiles(root);
+        await clearOPFSRootEntries(root);
+
+        const materialized = await materializeSampledFramesForRuns(completedRuns, SAMPLE_FRAME_STRIDE);
+        const srPart = uploadedCount > 0
+            ? `SR=${uploadedCount} sampled frame(s)`
+            : `SR=0 (requested=${srRequestedInRun}, active=${super_res}, attempted=${srCaptureAttempted}, posted=${srCapturePosted}, blob-null=${srCaptureBlobNull}, opfs-ok=${srWorkerWriteSuccess}, opfs-error=${srWorkerWriteError}${srRuntimeErrorMessage ? `, fallback=${srRuntimeErrorMessage}` : ''})`;
+        setExpUI({running:false, status:"Finished", detail:`Saved sampled frames with stride=${SAMPLE_FRAME_STRIDE}: Original+GT over ${materialized.sampledFrames} sampled frame(s), ${srPart}.`, progress01:1});
+
+        } catch (err) {
+        if (String(err?.message || err).includes('CANCELLED')) {
+            setExpUI({running:false, status:"Cancelled", detail:"Experiment cancelled.", progress01:0});
+        } else {
+            console.error(err);
+            setExpUI({running:false, status:"Error", detail:String(err?.message || err), progress01:0});
+            alert('Experiment failed: ' + (err?.message || err));
+        } 
+        }
+    });
+
+    async function recordExperimentData() {
+        const data = new Array();
+        while (EXP_RUNNING) {
+            // save latency, fps each second
+            data.push({
+                latency: throughputABR.lastLatencyMs,
+                fps: document.getElementById("fps").textContent,
+            })
+            await sleep(1000);
+            if (EXP_CANCEL) break;
+        }
+        // console.log("Experiment data recorded:", data);
+        return data;
+    }
+
+    async function runOnePlayback(events) {
+        for (const ev of events) {
+            if (EXP_CANCEL) {
+                break;
+            }
+            applyEvent(ev);
+            // wait for one frame
+            await sleep(40);
+        }
+        EXP_RUNNING = false;
+    }
+
+    async function applyEvent(ev) {
+        if (!EXP_RUNNING) return;
+        if (ev.angle != null) angle = Number(ev.angle);
+        if (ev.elevation != null) elevation = Number(ev.elevation);
+        if (ev.x != null) x = Number(ev.x);
+        if (ev.y != null) y = Number(ev.y);
+        if (ev.z != null) z = Number(ev.z);
+
+        positionDisplay.textContent =
+            `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
+    }
+
+    // Initial state
+    setExpUI({running:false, status:"Idle", detail:"Configure settings and press Start.", progress01:0});
+
+    window.addEventListener('beforeunload', (event) => {
+        if (!EXP_RUNNING) return;
+        event.preventDefault();
+        event.returnValue = 'An experiment is still saving sampled frames. Leaving now may lose results.';
+    });
+</script>
+
+<script>
+  const saveImagesBtn = document.getElementById('save-images');
+  const expNameInput = document.getElementById('exp-name');
+  const saveImagesStatus = document.getElementById('save-images-status');
+
+  saveImagesBtn?.addEventListener('click', async () => {
+    const experimentName = (expNameInput?.value || '').trim();
+    if (!experimentName) {
+      alert('Please enter an experiment name.');
+      expNameInput?.focus();
+      return;
+    }
+
+    saveImagesBtn.disabled = true;
+    if (saveImagesStatus) saveImagesStatus.textContent = 'Sending request…';
+
+    try {
+      const res = await fetch('/saveImages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ experimentName })
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+
+      // If backend returns JSON, you can read it; if not, ignore.
+      // const data = await res.json().catch(() => null);
+
+      if (saveImagesStatus) saveImagesStatus.textContent = `✅ Saved images for "${experimentName}"`;
+    } catch (e) {
+      console.error('[saveImages] failed', e);
+      if (saveImagesStatus) saveImagesStatus.textContent = `❌ Failed: ${e.message || e}`;
+      alert('Save Images failed: ' + (e.message || e));
+    } finally {
+      saveImagesBtn.disabled = false;
+    }
+  });
+</script>
+<script>
+    async function WebTransportStart(url) {
+        const transport = new WebTransport(url);
+        transport.closed.then(() => {
+            console.log(`The HTTP/3 connection to ${url} closed gracefully.`);
+        }).catch((error) => {
+            console.error(`The HTTP/3 connection to ${url} closed due to ${error}.`);
+        });
+        
+        await transport.ready;
+        return transport;
+    }
+
+    const throughputABR = new ThroughputABR();
+    let _profile = null;
+    async function WT_SendCameraConfig(writer) {
+        // const profile = abr.pickProfile(width, height);
+        // abr.startRequest(profile, width, height);
+        await writer.ready;
+        _profile = throughputABR.pickProfile();
+        const msg = JSON.stringify({
+            modelId, angle, elevation, 
+            x, y, z, fx, fy, cx, cy, 
+            width, height, profile: _profile,
+            timestemp: Math.trunc(performance.timeOrigin + performance.now())
+        });
+        const encoded = encodeMessage(msg);
+        await writer.write(encoded);
+
+        // requestAnimationFrame(function() {WT_SendCameraConfig(writer);});
+        setTimeout(function() {WT_SendCameraConfig(writer);}, 10);
+    }
+
+    function encodeMessage(msg) {
+        const encoder = new TextEncoder();
+        const msgArray = encoder.encode(msg);
+
+        const header = new Uint8Array(4);
+        const view = new DataView(header.buffer);
+        view.setInt32(0, msgArray.length, false); // Big-endian
+
+        const full_msg = new Uint8Array(4 + msgArray.byteLength);
+        full_msg.set(header, 0);
+        full_msg.set(msgArray, 4);
+
+        return full_msg;
+    }
+    
+    let prev = 0;
+    async function WT_ReceiveImage(reader) {
+        while (true) {
+            const {value, done} = await reader.read();
+            if (done) {
+                break;
+            }
+            
+            throughputABR.addReceiveBytes(value.length);
+            // console.log("diff", performance.now() - prev);
+            prev = performance.now();
+            handleChunks(value);
+        }
+    }
+
+    const chunksBuffer = new Map();
+    function handleChunks(data) {
+        const view = new DataView(data.buffer, 0, 18);
+        const imageId = view.getUint32(0);
+        const chunkIdx = view.getUint8(4);
+        const totalChunks = view.getUint8(5);
+        const timestemp = view.getBigUint64(6, false);
+        const render_ms = view.getFloat32(14, false);
+        const payload = data.slice(18);
+        if (!chunksBuffer.has(imageId)) {
+            const timeout = setTimeout(() => {
+                if (chunksBuffer.has(imageId)) {
+                    console.warn(`Image ${imageId} timed out. Dropping.`);
+                    chunksBuffer.delete(imageId);
+                    throughputABR.reportTimeout();
+                }
+            }, 100);
+
+            chunksBuffer.set(imageId, {
+                data: new Array(totalChunks).fill(null),
+                timer: timeout,
+                receivedCount: 0,
+                firstSendTime: Number(timestemp),
+                firstReceiveTime: performance.timeOrigin + performance.now(),
+                renderMs: render_ms
+            });
+        }
+
+        const entry = chunksBuffer.get(imageId);
+        if (entry.data[chunkIdx] === null) {
+            entry.data[chunkIdx] = payload;
+            entry.receivedCount++;
+        }
+
+        if (entry.receivedCount === totalChunks) {
+            clearTimeout(entry.timer);
+            const fullImage = new Blob(entry.data, { type: 'image/jpeg' });
+            renderImage(fullImage, entry.renderMs);
+            throughputABR.renderMs = entry.renderMs;
+            throughputABR.updateChunkCompleteTime(entry.firstSendTime, performance.timeOrigin + performance.now());
+            throughputABR.updateProcessingTime((performance.timeOrigin + performance.now() - entry.firstReceiveTime)
+                 * (entry.receivedCount + 1) / entry.receivedCount);
+            throughputABR.calcFrameTimeDiff(performance.timeOrigin + performance.now() - entry.firstSendTime);
+                 // throughputABR.calcThroughput(fullImage.size - 1350, performance.timeOrigin + performance.now() - entry.firstReceiveTime);
+            chunksBuffer.delete(imageId); // Clearup
+            
+            transport.then(async (wt) => {
+                const stats = await wt.getStats();
+                const rtt = stats.smoothedRtt;
+                throughputABR.updateWithEstimatedRTT(rtt);
+            })
+        }
+    }
+
+    function renderImage(fullImage, renderMs) {
+        const ctx = canvas.getContext('2d', { alpha: false });
+        const url = URL.createObjectURL(fullImage);
+        const image = new Image();
+        image.onload = () => {
+            const img_width = image.naturalWidth;
+            const img_height = image.naturalHeight;
+            const scale = 1;
+
+            canvas.width = img_width * scale;
+            canvas.height = img_height * scale;
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+
+            ctx.drawImage(image, 0, 0, width, height, 0, 0, width, height);
+            frameCount++;
+            URL.revokeObjectURL(url);
+        };
+        image.src = url;
+
+        const renderTime = document.getElementById('render-ms');
+        renderTime.innerHTML = renderMs.toFixed(2);
+    }
+
+    const route = 'wt';
+    const url = `${window.location.origin}/${route}`
+    const transport = WebTransportStart(url);
+    
+    transport.then((wt) => {
+        const stream = wt.createUnidirectionalStream();
+        return stream;
+    })
+    .then((stream) => {
+        const writer = stream.getWriter();
+        WT_SendCameraConfig(writer);
+
+        window.addEventListener("beforeunload", () => {
+            const encoded = encodeMessage("{\"closed\":\"1\"}");
+            writer.write(encoded);
+        });
+    });
+
+    transport.then((wt) => {
+        const readableStream = wt.datagrams.readable;
+        const reader = readableStream.getReader();
+        WT_ReceiveImage(reader);
+    });
+
+    
+
+</script>
+
+</body>
+
+</html>

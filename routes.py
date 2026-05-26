@@ -26,6 +26,11 @@ async def player_page(request: Request):
     await ensure_started()
     return FileResponse("templates/player.html")
 
+async def player_wt_page(request: Request):
+    logger.info("Get webtransport player page.")
+    await ensure_started()
+    return FileResponse("templates/player_wt.html")
+
 async def player_dash_page(request: Request):
     logger.info("Get dash player page.")
     await ensure_started()
@@ -566,3 +571,21 @@ async def materialize_sampled_frames(request: Request):
     except Exception as e:
         logger.exception("Failed materializing sampled frames")
         return PlainTextResponse(f"Failed materializing sampled frames: {e}", status_code=500)
+    
+async def receive_experiment_data(request: Request):
+    await ensure_started()
+    try:
+        body = await request.json()
+    except Exception as e:
+        return PlainTextResponse(f"Invalid JSON: {e}", status_code=400)
+
+    name = body.get("expName")
+    fps = body.get("fps")
+    latency = body.get("latency")
+
+    f = Path(EXPERIMENTS_DIR) / name / "experiment_data.ndjson"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    with open(f, "a", encoding="utf-8") as out:
+        out.write("{\"fps\": %s,\"latency\": %s}" % (fps, latency))
+        out.write("\n")
+    return JSONResponse({"ok": True}, status_code=200)
