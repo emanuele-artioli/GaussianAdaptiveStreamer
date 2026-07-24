@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/itec/emanuele/.agent-rules/scripts/session-status.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "/home/itec/emanuele/.agent-rules/scripts/guard-rm.py",
+              "--protected", "outputs",
+              "--detail", "Rendering/evaluation sweep outputs (frames, videos, tradeoff curves) - gitignored, costs real render+encode time to reproduce"
+            ],
+            "statusMessage": "Checking rm target..."
+          }
+        ]
+      }
+    ]
+  }
+}
