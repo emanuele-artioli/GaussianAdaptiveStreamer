@@ -1,0 +1,8 @@
+{
+  "_comment": "Per-project values for the host-wide shell guards in ~/.agent-rules/scripts/. Read by every agent's hook adapter; see .agent-rules/README.md.",
+  "protected": [
+    "outputs"
+  ],
+  "detail": "Rendering/evaluation sweep outputs (frames, videos, tradeoff curves) - gitignored, costs real render+encode time to reproduce",
+  "entry_points": []
+}

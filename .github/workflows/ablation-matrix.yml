@@ -6,6 +6,21 @@ name: Ablation Matrix
   pull_request:
 
 jobs:
+  agent-rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Agent rule files match AGENTS.md
+        run: python3 tools/sync_agent_rules.py --check
+
   headless-ablation:
     runs-on: ubuntu-latest
     strategy:
