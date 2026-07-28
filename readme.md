@@ -1,5 +1,12 @@
-# Gaussian Adaptive Streamer
-Gaussian Adaptive Streamer is a prototype system for adaptive streaming of 3D Gaussian Splatting scenes over modern web transport protocols. The project combines HTTP/3-based delivery, DASH-style adaptive streaming, and server-side Gaussian model handling to efficiently stream large neural rendering datasets to a client.Gaussian Adaptive Streamer
+# TIGAS (Thin-Client Interactive Gaussian Adaptive Streaming)
+
+Formerly **Gaussian Adaptive Streamer**. Prototype system for adaptive
+streaming of 3D Gaussian Splatting scenes over HTTP/3 / WebTransport with
+DASH-style ABR and server-side Gaussian model handling.
+
+The companion paper (Overleaf) is nested at
+`68c9198c30495c4e43526835/` (separate git history, gitignored here). Agent
+rules for this code repo live in `AGENTS.md`.
 
 # Requirements
 

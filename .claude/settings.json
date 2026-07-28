@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/itec/emanuele/.agent-rules/scripts/session-status.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "/home/itec/emanuele/.agent-rules/scripts/guard-rm.py",
+              "--protected", "experiment",
+              "--protected", "captures",
+              "--detail", "Interactive session exports and captured frames - gitignored, cost real GPU sessions to reproduce"
+            ],
+            "statusMessage": "Checking rm target..."
+          }
+        ]
+      }
+    ]
+  }
+}

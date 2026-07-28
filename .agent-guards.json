@@ -1,0 +1,9 @@
+{
+  "_comment": "Per-project values for the host-wide shell guards in ~/.agent-rules/scripts/. Read by every agent's hook adapter; see .agent-rules/README.md.",
+  "protected": [
+    "experiment",
+    "captures"
+  ],
+  "detail": "Interactive session exports and captured frames - gitignored, cost real GPU sessions to reproduce",
+  "entry_points": []
+}
