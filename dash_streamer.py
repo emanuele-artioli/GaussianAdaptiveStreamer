@@ -13,6 +13,8 @@ from render import render_image_raw
 from statics import DASH_DIR
 
 FFMPEG = os.environ.get("FFMPEG", "/usr/local/bin/ffmpeg")
+# Akamai ISO clock; required so ffmpeg honors write_prft / target_latency.
+UTC_TIMING_URL = os.environ.get("DASH_UTC_TIMING_URL", "https://time.akamai.com/?iso")
 
 
 @dataclass
@@ -61,6 +63,13 @@ class DashStreamer:
             {"w": 800, "h": 600, "br": "1200k"},
         ]
 
+        # Packager knobs (overridable via env before ensure_started).
+        self.gop = int(os.environ.get("DASH_GOP", "8"))
+        self.seg_duration = float(os.environ.get("DASH_SEG_DURATION", "0.1"))
+        self.target_latency = float(os.environ.get("DASH_TARGET_LATENCY", "0.1"))
+        self.window_size = int(os.environ.get("DASH_WINDOW_SIZE", "8"))
+        self.utc_timing_url = os.environ.get("DASH_UTC_TIMING_URL", UTC_TIMING_URL)
+
     def is_running(self) -> bool:
         return self._running and self._task is not None and not self._task.done()
 
@@ -84,7 +93,10 @@ class DashStreamer:
 
             self.out_dir.mkdir(parents=True, exist_ok=True)
 
-            gop = 8
+            gop = max(1, int(self.gop))
+            seg_duration = max(0.033, float(self.seg_duration))
+            target_latency = max(0.033, float(self.target_latency))
+            window_size = max(2, int(self.window_size))
 
             ffmpeg = shutil.which(FFMPEG) if os.path.sep not in FFMPEG else FFMPEG
             if not ffmpeg or not Path(ffmpeg).exists():
@@ -108,6 +120,9 @@ class DashStreamer:
                 filter_parts.append(f"[v{i}]scale={r['w']}:{r['h']}[v{i}o];")
             filter_complex = "".join(filter_parts).rstrip(";")
 
+            # Small encoder buffer for LL; scale lightly with bitrate.
+            bufsize = "500k"
+
             cmd = [
                 ffmpeg,
                 "-hide_banner",
@@ -128,11 +143,11 @@ class DashStreamer:
                     "-c:v", "h264_nvenc",
                     "-pix_fmt", "yuv420p",
                     "-preset", "p1",
-                    "-tune", "ll", 
+                    "-tune", "ll",
                     "-rc", "cbr",
                     "-b:v", r["br"],
                     "-maxrate", r["br"],
-                    "-bufsize", "2M",
+                    "-bufsize", bufsize,
                     "-g", str(gop),
                     "-keyint_min", str(gop),
                     "-sc_threshold", "0",
@@ -142,14 +157,17 @@ class DashStreamer:
                 "-f", "dash",
                 "-use_template", "1",
                 "-use_timeline", "1",
-                "-window_size", "8",
-                "-extra_window_size", "8",
+                "-window_size", str(window_size),
+                "-extra_window_size", str(window_size),
                 "-remove_at_exit", "0",
-                "-seg_duration", "0.1",
+                "-seg_duration", str(seg_duration),
                 "-frag_type", "every_frame",
                 "-ldash", "1",
                 "-streaming", "1",
-                "-target_latency", "0.1",
+                # PRT + UTC timing required for target_latency to take effect.
+                "-utc_timing_url", self.utc_timing_url,
+                "-write_prft", "1",
+                "-target_latency", str(target_latency),
                 "-start_number", "1",
                 "-adaptation_sets", "id=0,streams=0",
                 "-init_seg_name", "init-$RepresentationID$.mp4",

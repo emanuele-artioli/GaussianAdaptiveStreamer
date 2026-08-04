@@ -6,10 +6,14 @@ Records version-aware pose -> ffmpeg-write latency from DashStreamer (avoids
 keepalive false hits), then forms a playback lower bound with the configured
 dash.js liveDelay and MPD minBufferTime.
 
-Bounds before trusting:
-  input_to_write_ms: best ~10-200, worst ~500-2000; alarm if mean <1 or >10000
-  est_playback_ms (= input_to_write + liveDelay + minBuffer): best ~300-600,
-    worst ~800-5000; alarm if mean <100 or >30000; need max >= 500 for claim
+Profiles:
+  baseline — stock 100 ms segments / liveDelay (camera-ready table)
+  ull      — ultra-LL: ~33 ms segments, GOP 2, PRT+UTC, liveDelay 50 ms
+
+Bounds before trusting (ull):
+  input_to_write_ms: best ~5-50, worst ~200-1000; alarm if mean <1 or >10000
+  est_playback_ms: best ~80-150, worst ~300-2000; alarm if mean <50 (bug)
+  contribution gate: est_playback p95 < 100 ms
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import asyncio
 import csv
 import json
 import os
+import re
 import statistics
 import sys
 import time
@@ -34,10 +39,24 @@ from models import get_model, init_model_registry
 from render import render_image_raw
 
 
-LIVE_DELAY_MS = 100.0
-MIN_BUFFER_MS = 200.0  # ffmpeg MPD minBufferTime PT0.2S under these flags
-WINDOW = 8  # stock dash_streamer.py setting
-
+PROFILES = {
+    "baseline": {
+        "DASH_SEG_DURATION": "0.1",
+        "DASH_TARGET_LATENCY": "0.1",
+        "DASH_GOP": "8",
+        "DASH_WINDOW_SIZE": "8",
+        "live_delay_ms": 100.0,
+        "min_buffer_fallback_ms": 200.0,
+    },
+    "ull": {
+        "DASH_SEG_DURATION": "0.033",
+        "DASH_TARGET_LATENCY": "0.05",
+        "DASH_GOP": "2",
+        "DASH_WINDOW_SIZE": "16",
+        "live_delay_ms": 50.0,
+        "min_buffer_fallback_ms": 66.0,  # ~2× seg if MPD omits
+    },
+}
 
 write_events: list[dict] = []
 
@@ -55,6 +74,16 @@ def summarize(vals: list[float]) -> dict:
         "max_ms": max(vals),
         "min_ms": min(vals),
     }
+
+
+def parse_min_buffer_ms(mpd_text: str, fallback_ms: float) -> float:
+    m = re.search(r'minBufferTime="PT([0-9.]+)S"', mpd_text)
+    if m:
+        val = float(m.group(1)) * 1000.0
+        # ldash often writes PT0.0S; that is not a usable interactive buffer floor.
+        if val > 0:
+            return val
+    return fallback_ms
 
 
 async def instrumented_render_loop() -> None:
@@ -128,58 +157,34 @@ async def instrumented_render_loop() -> None:
 
 
 async def start_streamer() -> None:
-    async with STREAMER._lock:
-        if STREAMER.is_running():
-            return
-        STREAMER.out_dir.mkdir(parents=True, exist_ok=True)
-        for p in STREAMER.out_dir.glob("*"):
-            try:
-                p.unlink()
-            except FileNotFoundError:
-                pass
-        max_w = max(r["w"] for r in STREAMER.reps)
-        max_h = max(r["h"] for r in STREAMER.reps)
-        STREAMER._state.width = max_w
-        STREAMER._state.height = max_h
-        ffmpeg = os.environ["FFMPEG"]
-        gop = 8
-        filter_complex = f"[0:v]split=1[v0];[v0]scale={max_w}:{max_h}[v0o]"
-        br = STREAMER.reps[0]["br"]
-        cmd = [
-            ffmpeg, "-hide_banner", "-loglevel", "warning",
-            "-progress", "pipe:2", "-nostats",
-            "-f", "rawvideo", "-pix_fmt", "rgb24",
-            "-s:v", f"{max_w}x{max_h}", "-r", str(STREAMER.fps),
-            "-i", "pipe:0", "-filter_complex", filter_complex,
-            "-map", "[v0o]", "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
-            "-preset", "p1", "-tune", "ll", "-rc", "cbr",
-            "-b:v", br, "-maxrate", br, "-bufsize", "2M",
-            "-g", str(gop), "-keyint_min", str(gop),
-            "-f", "dash", "-use_template", "1", "-use_timeline", "1",
-            "-window_size", str(WINDOW), "-extra_window_size", str(WINDOW),
-            "-remove_at_exit", "0",
-            "-seg_duration", "0.1", "-frag_type", "every_frame",
-            "-ldash", "1", "-streaming", "1", "-target_latency", "0.1",
-            "-start_number", "1", "-adaptation_sets", "id=0,streams=0",
-            "-init_seg_name", "init-$RepresentationID$.mp4",
-            "-media_seg_name", "chunk-$RepresentationID$-$Number%05d$.m4s",
-            str(STREAMER.mpd_path),
-        ]
-        from logger import logger
-        logger.info("Starting ffmpeg DASH probe: %s", " ".join(cmd))
-        STREAMER._proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        STREAMER._running = True
-        STREAMER._state_event.set()
-        STREAMER._task = asyncio.create_task(instrumented_render_loop())
-        STREAMER._ffmpeg_log_task = asyncio.create_task(STREAMER._read_ffmpeg_logs())
+    # Refresh knobs from env (profile applied in main before import... set on STREAMER).
+    STREAMER.gop = int(os.environ.get("DASH_GOP", str(STREAMER.gop)))
+    STREAMER.seg_duration = float(os.environ.get("DASH_SEG_DURATION", str(STREAMER.seg_duration)))
+    STREAMER.target_latency = float(
+        os.environ.get("DASH_TARGET_LATENCY", str(STREAMER.target_latency))
+    )
+    STREAMER.window_size = int(os.environ.get("DASH_WINDOW_SIZE", str(STREAMER.window_size)))
+
+    await STREAMER.ensure_started()
+    # Swap in instrumented loop.
+    if STREAMER._task and not STREAMER._task.done():
+        STREAMER._task.cancel()
+        try:
+            await STREAMER._task
+        except asyncio.CancelledError:
+            pass
+    STREAMER._task = asyncio.create_task(instrumented_render_loop())
 
 
 async def run(args: argparse.Namespace) -> int:
+    profile = PROFILES[args.profile]
+    for k, v in profile.items():
+        if k.startswith("DASH_"):
+            os.environ[k] = str(v)
+
+    live_delay_ms = float(profile["live_delay_ms"])
+    min_buffer_fallback_ms = float(profile["min_buffer_fallback_ms"])
+
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -196,11 +201,14 @@ async def run(args: argparse.Namespace) -> int:
         fx=float(p0["fx"]), fy=float(p0["fy"]),
         cx=float(p0["cx"]), cy=float(p0["cy"]),
     )
-    # warmup until first non-keepalive write
     for _ in range(200):
         if any(not e["keepalive"] for e in write_events):
             break
         await asyncio.sleep(0.05)
+
+    mpd_text = STREAMER.mpd_path.read_text() if STREAMER.mpd_path.exists() else ""
+    min_buffer_ms = parse_min_buffer_ms(mpd_text, min_buffer_fallback_ms)
+    has_prft = "ProducerReferenceTime" in mpd_text or "UTCTiming" in mpd_text
 
     t0 = time.perf_counter()
     i = 0
@@ -222,9 +230,13 @@ async def run(args: argparse.Namespace) -> int:
             i += 1
 
     await asyncio.sleep(1.0)
+    # Re-read MPD before stop (still dynamic).
+    if STREAMER.mpd_path.exists():
+        mpd_text = STREAMER.mpd_path.read_text()
+        min_buffer_ms = parse_min_buffer_ms(mpd_text, min_buffer_fallback_ms)
+        has_prft = "ProducerReferenceTime" in mpd_text or "UTCTiming" in mpd_text
     await STREAMER.stop()
 
-    # Drop warm-up: first 2s of writes
     if write_events:
         t_start = write_events[0]["t_wall_ms"]
         useful = [
@@ -235,9 +247,8 @@ async def run(args: argparse.Namespace) -> int:
         useful = []
 
     itw = [float(e["input_to_write_ms"]) for e in useful if e["input_to_write_ms"] > 0]
-    est = [v + LIVE_DELAY_MS + MIN_BUFFER_MS for v in itw]
-    # Also report without minBuffer (liveDelay only) for transparency
-    est_delay_only = [v + LIVE_DELAY_MS for v in itw]
+    est = [v + live_delay_ms + min_buffer_ms for v in itw]
+    est_delay_only = [v + live_delay_ms for v in itw]
 
     itw_sum = summarize(itw)
     est_sum = summarize(est)
@@ -246,24 +257,31 @@ async def run(args: argparse.Namespace) -> int:
     alarms: list[str] = []
     if itw_sum.get("n", 0) < 20:
         alarms.append(f"too few input_to_write samples ({itw_sum.get('n', 0)})")
-    else:
-        if itw_sum["mean_ms"] < 1 or itw_sum["mean_ms"] > 10000:
-            alarms.append(f"input_to_write mean {itw_sum['mean_ms']:.1f} out of bounds")
+    elif itw_sum["mean_ms"] < 1 or itw_sum["mean_ms"] > 10000:
+        alarms.append(f"input_to_write mean {itw_sum['mean_ms']:.1f} out of bounds")
     if est_sum.get("n", 0) == 0:
         alarms.append("no est_playback samples")
-    else:
-        if est_sum["mean_ms"] < 100 or est_sum["mean_ms"] > 30000:
-            alarms.append(f"est_playback mean {est_sum['mean_ms']:.1f} out of bounds")
-        if est_sum["max_ms"] < 500:
-            alarms.append(f"est_playback max {est_sum['max_ms']:.1f} never exceeds 500 ms")
+    elif est_sum["mean_ms"] < 50:
+        alarms.append(f"est_playback mean {est_sum['mean_ms']:.1f} < 50 ms (likely bug)")
+    elif est_sum["mean_ms"] > 30000:
+        alarms.append(f"est_playback mean {est_sum['mean_ms']:.1f} > 30 s")
+
+    # Contribution gate (ull profile): p95 playback under 100 ms interactive budget.
+    contribution_ok = (
+        args.profile == "ull"
+        and est_sum.get("n", 0) >= 20
+        and est_sum.get("p95_ms", 1e9) < 100.0
+        and not any(a.startswith("too few") or "bug" in a or "> 30" in a for a in alarms)
+    )
 
     summary = {
+        "profile": args.profile,
         "bounds_before_run": {
-            "input_to_write_ms": {"best": "10-200", "worst": "500-2000", "alarm": "<1 or >10000"},
+            "input_to_write_ms": {"best": "5-50 (ull) / 10-200 (baseline)", "alarm": "<1 or >10000"},
             "est_playback_ms": {
-                "best": "300-600",
-                "worst": "800-5000",
-                "alarm": "<100 or >30000; max must be >=500",
+                "best": "80-150 (ull)",
+                "worst": "300-2000",
+                "contribution_gate": "p95 < 100 ms",
             },
         },
         "metric_definition": {
@@ -272,12 +290,11 @@ async def run(args: argparse.Namespace) -> int:
                 "camera-state version (keepalive frames excluded)"
             ),
             "est_playback_ms": (
-                f"input_to_write_ms + liveDelay ({LIVE_DELAY_MS:.0f} ms) + "
-                f"MPD minBufferTime ({MIN_BUFFER_MS:.0f} ms); lower bound on "
-                "dash.js playback delay under /player-dash settings"
+                f"input_to_write_ms + liveDelay ({live_delay_ms:.0f} ms) + "
+                f"MPD minBufferTime ({min_buffer_ms:.0f} ms)"
             ),
             "est_playback_liveDelay_only_ms": (
-                f"input_to_write_ms + liveDelay ({LIVE_DELAY_MS:.0f} ms) only"
+                f"input_to_write_ms + liveDelay ({live_delay_ms:.0f} ms) only"
             ),
         },
         "config": {
@@ -288,12 +305,18 @@ async def run(args: argparse.Namespace) -> int:
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "python": sys.executable,
             "dash_flags": {
-                "seg_duration": 0.1,
-                "target_latency": 0.1,
+                "seg_duration": float(os.environ["DASH_SEG_DURATION"]),
+                "target_latency": float(os.environ["DASH_TARGET_LATENCY"]),
+                "gop": int(os.environ["DASH_GOP"]),
+                "window_size": int(os.environ["DASH_WINDOW_SIZE"]),
                 "ldash": 1,
-                "liveDelay_player": LIVE_DELAY_MS / 1000.0,
-                "minBufferTime_s": MIN_BUFFER_MS / 1000.0,
-                "window_size": WINDOW,
+                "write_prft": 1,
+                "utc_timing_url": os.environ.get(
+                    "DASH_UTC_TIMING_URL", "https://time.akamai.com/?iso"
+                ),
+                "liveDelay_player_ms": live_delay_ms,
+                "minBufferTime_ms": min_buffer_ms,
+                "mpd_has_utc_or_prft": has_prft,
                 "codec": "h264_nvenc",
             },
         },
@@ -301,6 +324,7 @@ async def run(args: argparse.Namespace) -> int:
         "est_playback_ms": est_sum,
         "est_playback_liveDelay_only_ms": delay_only_sum,
         "alarms": alarms,
+        "contribution_ok": contribution_ok,
         "citable": len(alarms) == 0 and est_sum.get("n", 0) >= 20,
         "n_write_events_total": len(write_events),
         "n_pose_writes_used": len(useful),
@@ -323,6 +347,7 @@ def main() -> None:
     ap.add_argument("--model", default="train")
     ap.add_argument("--trace", default="TestMovements/NTHU/train/user3_train.json")
     ap.add_argument("--duration", type=float, default=45.0)
+    ap.add_argument("--profile", choices=sorted(PROFILES), default="baseline")
     ap.add_argument("--out", default="experiment/dash_cmaf_20260804")
     args = ap.parse_args()
     raise SystemExit(asyncio.run(run(args)))

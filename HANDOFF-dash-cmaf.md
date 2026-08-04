@@ -1,28 +1,26 @@
 # Handoff: DASH/CMAF empirical results for TIGAS camera-ready
 
-**Status (2026-08-04):** Measurement **done and folded into** `68c9198c30495c4e43526835/main.tex` (Motivating Example table). Sync/push Overleaf when ready; watch 8-page limit after Overleaf rebuild.
+**Status (2026-08-04):** Camera-ready baseline table pushed to Overleaf (`e91017c`). ULL stress-test **failed** the contribution gate (composed p95 ≈ 124 ms &gt; 100 ms). Do not claim ULL DASH as a paper contribution.
 
 ---
 
-## Results (citable)
+## Pushed
 
-Run dir (gitignored): `experiment/dash_cmaf_20260804/` (`summary.json`, `write_events.csv`, `NOTES.md`).
+| Where | Commit | What |
+|-------|--------|------|
+| Overleaf paper | `e91017c` | Motivating Example `tab:dash_cmaf_latency` |
+| GitHub `emanuele-artioli/TIGAS` | `ffd0b31` (+ follow-up for ULL packager) | measure script + handoff; then PRT/UTC + env knobs |
 
-| Metric | Mean | p95 | Max |
-|--------|------|-----|-----|
-| Pose→encode (ms) | 6.2 | 6.8 | 477.7 |
-| Playback lower bound (ms) = write + liveDelay 100 + minBuffer 200 | 306.2 | 306.8 | **777.7** |
-
-LiveDelay-only max is **577.7 ms** (also >500). Bounds were stated before the run; no hard alarms.
-
-Setup: GPU1, conda `tigas`, `train` PLY from `Datasets/3DGS`, EyeNavGS `NTHU/user3`, 45 s, stock LL-DASH ffmpeg flags. Headless Chromium MSE stalled; numbers are version-aware pose→ffmpeg-write plus configured player delay/buffer (lower bound).
-
-Script: `scripts/measure_dash_latency.py`.
+Confirm ≤8 pages on Overleaf after rebuild.
 
 ---
 
-## Remaining for human / Overleaf
+## Baseline results (table in paper)
 
-1. Pull/edit on Overleaf; confirm still ≤8 pages with the new table.
-2. Optional cosmetic: Fig.1 legend Streamer→TIGAS (separate item).
-3. Do not reopen WebRTC quantitative study.
+`experiment/dash_cmaf_20260804/` — pose→encode mean 6.2 / max 478; playback lower bound mean 306 / max 778.
+
+## ULL tune (no contribution)
+
+`experiment/dash_cmaf_ull_20260804/` — seg 33 ms, GOP 2, liveDelay 50 ms, PRT+UTC on. Composed playback p95 **123.9 ms** (gate was &lt;100). Notes in that dir.
+
+Code improvements kept: packager honors `target_latency` via UTC/PRT; `DASH_*` env knobs; player `?liveDelay=`.

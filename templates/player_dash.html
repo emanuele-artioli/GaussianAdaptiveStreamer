@@ -55,11 +55,14 @@
 
     function createPlayer() {
       const p = dashjs.MediaPlayer().create();
+      // Optional ?liveDelay=0.05 for ultra-LL experiments; default matches packager target.
+      const params = new URLSearchParams(window.location.search);
+      const liveDelay = Math.max(0.033, parseFloat(params.get('liveDelay') || '0.1'));
 
       p.updateSettings({
         streaming: {
           delay: {
-            liveDelay: 0.1,
+            liveDelay,
             liveDelayFragmentCount: NaN,
             useSuggestedPresentationDelay: false
           },
